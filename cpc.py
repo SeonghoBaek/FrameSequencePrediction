@@ -18,28 +18,47 @@ def load_images_from_folder(folder, use_augmentation=False, add_noise=False):
     # To Do
     # Color, Brightness Augmentation
 
-    for filename in os.listdir(folder):
+    for idx in range(len(os.listdir(folder))):
+        filename = str(idx+1) + '.jpg'
         fullname = os.path.join(folder, filename).replace("\\", "/")
         jpg_img = cv2.imread(fullname)
-        img = cv2.cvtColor(jpg_img, cv2.COLOR_BGR2RGB)  # To RGB format
-        img = cv2.resize(img, dsize=(input_height, input_width))
+        #img = cv2.cvtColor(jpg_img, cv2.COLOR_BGR2RGB)  # To RGB format
+        img = cv2.resize(jpg_img, dsize=(input_height, input_width))
 
         if img is not None:
             img = np.array(img)
-
             n_img = img / 255.0
-            images.append(n_img)
+            images.append(img)
 
     return np.array(images)
+
+
+def get_residual_loss(value, target, type='l1', gamma=1.0):
+    if type == 'rmse':
+        loss = tf.sqrt(tf.reduce_mean(tf.square(tf.subtract(target, value))))
+    elif type == 'cross-entropy':
+        eps = 1e-10
+        loss = tf.reduce_mean(-1 * target * tf.log(value + eps) - 1 * (1 - target) * tf.log(1 - value + eps))
+    elif type == 'l1':
+        loss = tf.reduce_mean(tf.abs(tf.subtract(target, value)))
+    elif type == 'l2':
+        loss = tf.reduce_mean(tf.square(tf.subtract(target, value)))
+
+    loss = gamma * loss
+
+    return loss
 
 
 def auto_regressive(latents, sequence_length=4, out_dim=256, scope='ar'):
     with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
         # [Batch Size, Latent Dims]
-        sequence_batch = tf.stack([tf.slice(latents, [i, 0], [sequence_length, -1]) for i in range(batch_size - sequence_length)], axis=0)
+        #sequence_batch = tf.stack([tf.slice(latents, [i, 0], [sequence_length, -1]) for i in range(batch_size - sequence_length)], axis=0)
+        sequence_batch = tf.slice(latents, [0, 0], [sequence_length, -1])
+        sequence_batch = tf.expand_dims(sequence_batch, 0)
         print('Sequence Batch Shape: ' + str(sequence_batch.get_shape().as_list()))
 
         context = layers.bi_lstm_network(sequence_batch, lstm_hidden_size_layer=ar_lstm_hidden_layer_dims, lstm_latent_dim=out_dim)
+        #context = layers.lstm_network(sequence_batch, lstm_hidden_size_layer=ar_lstm_hidden_layer_dims, lstm_latent_dim=out_dim)
 
     return context
 
@@ -50,22 +69,8 @@ def CPC(latents, target_dim=64, emb_scale=0.1, scope='cpc'):
         # [num_predict, ar_context_dim]
         print('AR Context Shape: ' + str(context.get_shape().as_list()))
 
-        context = tf.reshape(context, shape=[1, 1, context.get_shape().as_list()[0], context.get_shape().as_list()[1]])
-        context = layers.conv(context, scope='context_conv', filter_dims=[1, 1, target_dim], stride_dims=[1, 1],
-                              non_linear_fn=None, bias=True)
-        context = tf.squeeze(context, [0, 1])
-        print('Context Shape: ' + str(context.get_shape().as_list()))
-        context = context * emb_scale
-
-        latents = tf.reshape(latents, shape=[1, 1, latents.get_shape().as_list()[0], latents.get_shape().as_list()[1]])
-        targets = layers.conv(latents, scope='latent_conv', filter_dims=[1, 1, target_dim], stride_dims=[1, 1],
-                              non_linear_fn=None, bias=True)
-        targets = tf.squeeze(targets, [0, 1])
-        print('Target Shape: ' + str(targets.get_shape().as_list()))
-
-        logits = tf.matmul(context, targets, transpose_b=True)
-        print('Logit Shape: ' + str(logits.get_shape().as_list()))
-
+        targets = tf.slice(latents, [ar_lstm_sequence_length, 0], [-1, -1])
+        residual_loss = get_residual_loss(context, targets, type='l1', gamma=1.0)
         # One Hot Label
         onehot_labels = []
 
@@ -73,14 +78,30 @@ def CPC(latents, target_dim=64, emb_scale=0.1, scope='cpc'):
             target_index = i + ar_lstm_sequence_length
             onehot = np.zeros(batch_size)
             onehot[target_index] = 1
+            print('Label: ' + str(onehot))
             onehot_labels.append(onehot)
 
         onehot_labels = np.array(onehot_labels)
         onehot_labels = tf.constant(onehot_labels)
 
-        loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=onehot_labels, logits=logits))
+        num_predicts = batch_size - ar_lstm_sequence_length
 
-        return loss, logits
+        scaled_context = tf.stack([layers.fc(context, target_dim, use_bias=False, scope='pred_' + str(i)) for i in range(num_predicts)])
+        scaled_context = tf.squeeze(scaled_context)
+        print('Predict Shape: ' + str(scaled_context.get_shape().as_list()))
+
+        scaled_context = scaled_context * emb_scale
+        targets = latents
+        targets = layers.fc(targets, target_dim, use_bias=False, scope='target')
+        print('Target Shape: ' + str(targets.get_shape().as_list()))
+
+        scaled_context = tf.expand_dims(scaled_context, 0)
+        logits = tf.matmul(scaled_context, targets, transpose_b=True)
+        print('Logit Shape: ' + str(logits.get_shape().as_list()))
+
+        entropy_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=onehot_labels, logits=logits))
+
+        return entropy_loss, residual_loss, logits, context
 
 
 def add_residual_block(in_layer, filter_dims, num_layers, act_func=tf.nn.relu, norm='layer',
@@ -164,9 +185,79 @@ def add_residual_dense_block(in_layer, filter_dims, num_layers, act_func=tf.nn.r
     return tf.add(l, in_layer)
 
 
+def decoder(latent, anchor_layer=None, activation='swish', scope='decoder_network', norm='layer', b_train=False):
+    with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
+        if activation == 'swish':
+            act_func = util.swish
+        elif activation == 'relu':
+            act_func = tf.nn.relu
+        elif activation == 'lrelu':
+            act_func = tf.nn.leaky_relu
+        else:
+            act_func = tf.nn.sigmoid
+
+        block_depth = dense_block_depth * 4
+
+        l = latent
+        #l = layers.fc(l, 4*4*32, non_linear_fn=act_func)
+
+        print('decoder input:', str(latent.get_shape().as_list()))
+        l = tf.reshape(l, shape=[-1, 4, 4, 64])
+
+        for i in range(5):
+            l = add_residual_block(l, filter_dims=[3, 3, block_depth], num_layers=2,
+                                   act_func=act_func, norm=norm, b_train=b_train, scope='block0_' + str(i))
+
+        print('block 0:', str(l.get_shape().as_list()))
+
+        block_depth = dense_block_depth * 2
+        # 8 x 8
+        l = layers.deconv(l, b_size=1, scope='deconv1', filter_dims=[3, 3, block_depth],
+                             stride_dims=[2, 2], padding='SAME', non_linear_fn=None)
+
+        print('deconv1:', str(l.get_shape().as_list()))
+
+        for i in range(5):
+            l = add_residual_block(l, filter_dims=[3, 3, block_depth], num_layers=2,
+                                   act_func=act_func, norm=norm, b_train=b_train, scope='block1_' + str(i))
+
+        # 16 x 16
+        l = layers.deconv(l, b_size=1, scope='deconv2', filter_dims=[3, 3, block_depth],
+                             stride_dims=[2, 2], padding='SAME', non_linear_fn=None)
+
+        print('deconv2:', str(l.get_shape().as_list()))
+
+        for i in range(5):
+            l = add_residual_block(l, filter_dims=[3, 3, block_depth], num_layers=2,
+                                   act_func=act_func, norm=norm, b_train=b_train,
+                                   scope='block2_' + str(i), use_dilation=True)
+
+        block_depth = dense_block_depth
+        # 32 x 32
+        l = layers.deconv(l, b_size=1, scope='deconv3', filter_dims=[3, 3, block_depth],
+                          stride_dims=[2, 2], padding='SAME', non_linear_fn=None)
+
+        if anchor_layer is not None:
+            l = tf.concat([l, anchor_layer], axis=3)
+            block_depth = block_depth * 2
+
+        print('deconv3:', str(l.get_shape().as_list()))
+
+        for i in range(5):
+            l = add_residual_block(l, filter_dims=[3, 3, block_depth], num_layers=4,
+                                   act_func=act_func, norm=norm, b_train=b_train,
+                                   scope='block3_' + str(i), use_dilation=True)
+
+        l = layers.add_dense_transition_layer(l, filter_dims=[1, 1, 3], act_func=act_func, use_pool=False, norm=norm, b_train=b_train, scope='tr1')
+        l = act_func(l)
+
+        print('final:', str(l.get_shape().as_list()))
+
+        return l
+
+
 def encoder(x, activation='relu', scope='encoder_network', norm='layer', b_train=False):
     with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
-
         if activation == 'swish':
             act_func = util.swish
         elif activation == 'relu':
@@ -181,13 +272,17 @@ def encoder(x, activation='relu', scope='encoder_network', norm='layer', b_train
 
         l = x
         l = layers.conv(l, scope='conv1', filter_dims=[3, 3, block_depth], stride_dims=[1, 1],
-                        non_linear_fn=None, bias=False, dilation=[1, 1, 1, 1])
+                        non_linear_fn=None, bias=False, dilation=[1, 2, 2, 1])
 
         l = layers.self_attention(l, block_depth)
 
         for i in range(3):
             l = add_residual_dense_block(l, filter_dims=[3, 3, block_depth], num_layers=2,
                                          act_func=act_func, norm=norm, b_train=b_train, scope='dense_block_1_' + str(i))
+
+        anchor_layer = tf.slice(l, [l.get_shape().as_list()[0]-1, 0, 0, 0], [1, -1, -1, -1])
+
+        # l = layers.self_attention(l, block_depth)
 
         block_depth = block_depth * 2
 
@@ -197,7 +292,7 @@ def encoder(x, activation='relu', scope='encoder_network', norm='layer', b_train
         print('Map Dims: ' + str(l.get_shape().as_list()))
 
         for i in range(4):
-            l = add_residual_block(l,  filter_dims=[3, 3, block_depth], num_layers=2, act_func=act_func,
+            l = add_residual_block(l,  filter_dims=[3, 3, block_depth], num_layers=4, act_func=act_func,
                                    norm=norm, b_train=b_train, scope='res_block_1_' + str(i), use_bottleneck=True)
 
         block_depth = block_depth * 2
@@ -205,17 +300,17 @@ def encoder(x, activation='relu', scope='encoder_network', norm='layer', b_train
         l = layers.add_dense_transition_layer(l, filter_dims=[3, 3, block_depth], stride_dims=[2, 2],
                                               act_func=act_func, norm=norm, b_train=b_train, use_pool=False,
                                               scope='tr2')
-        print('Map Dims: ' + str(l.get_shape().as_list()))
+        #print('Map Dims: ' + str(l.get_shape().as_list()))
 
-        for i in range(5):
-            l = add_residual_block(l,  filter_dims=[3, 3, block_depth], num_layers=2, act_func=act_func,
-                                   norm=norm, b_train=b_train, scope='res_block_2_' + str(i), use_bottleneck=True)
+        #for i in range(5):
+        #    l = add_residual_block(l,  filter_dims=[3, 3, block_depth], num_layers=2, act_func=act_func,
+        #                           norm=norm, b_train=b_train, scope='res_block_2_' + str(i), use_bottleneck=True)
 
-        block_depth = block_depth * 2
+        #block_depth = block_depth * 2
 
-        l = layers.add_dense_transition_layer(l, filter_dims=[3, 3, block_depth], stride_dims=[2, 2],
-                                              act_func=act_func, norm=norm, b_train=b_train, use_pool=False,
-                                              scope='tr3')
+        #l = layers.add_dense_transition_layer(l, filter_dims=[3, 3, block_depth], stride_dims=[2, 2],
+        #                                      act_func=act_func, norm=norm, b_train=b_train, use_pool=False,
+        #                                      scope='tr3')
         print('Map Dims: ' + str(l.get_shape().as_list()))
 
         for i in range(5):
@@ -242,14 +337,37 @@ def encoder(x, activation='relu', scope='encoder_network', norm='layer', b_train
         context = layers.global_avg_pool(last_layer, output_length=representation_dim, use_bias=True, scope='gp')
         print('GP Dims: ' + str(context.get_shape().as_list()))
 
-    return context
+    return context, anchor_layer
+
+
+def prepare_patches(image, patch_size=[24, 24], patch_dim=[7, 7], stride=12):
+    patches = []
+    patch_w = patch_size[0]
+    patch_h = patch_size[1]
+
+    #cv2.imwrite('original.jpg', image*255.0)
+    #print('image shape: ', image.shape)
+    for h in range(patch_dim[0]):
+        for w in range(patch_dim[1]):
+            #print('h:', h*stride, ' w: ', h*stride + patch_h)
+            #print('w:', w*stride, ' w: ', w*stride + patch_w)
+            patch = image[h*stride:(h*stride + patch_h), w*stride:(w*stride + patch_w)].copy()
+            #sample = patch*255.0
+            #sample = cv2.cvtColor(sample, cv2.COLOR_RGB2BGR)
+            #cv2.imwrite('patch_' + str(h) + '.jpg', sample)
+            #print('Patch dims: ', patch.shape)
+            patches.append(patch)
+
+    #print('Num patches: ', len(patches))
+    return np.array(patches)
 
 
 def train(model_path):
     print('Please wait. It takes several minutes. Do not quit!')
 
     with tf.device('/device:CPU:0'):
-        X = tf.placeholder(tf.float32, [batch_size, input_height, input_width, num_channel])
+        X = tf.placeholder(tf.float32, [batch_size, patch_height, patch_width, num_channel])
+        Y = tf.placeholder(tf.float32, [patch_height, patch_width, num_channel])
 
         trX = load_images_from_folder(imgs_dirname, use_augmentation=True)
         trX = trX.reshape((-1, input_height, input_width, num_channel))
@@ -260,13 +378,21 @@ def train(model_path):
     config = tf.ConfigProto(allow_soft_placement=True)
     config.gpu_options.allow_growth = True
 
-    latents = encoder(X, activation='relu', norm='layer', b_train=b_train, scope='encoder')
+    latents, anchor_layer = encoder(X, activation='relu', norm='layer', b_train=b_train, scope='encoder')
     # [Batch Size, Latent Dims]
     print('Encoder Dims: ' + str(latents.get_shape().as_list()))
 
-    cpc_loss, cpc_logits = CPC(latents, emb_scale=1.0, scope='cpc')
+    cpc_e_loss, cpc_r_loss, cpc_logits, cpc_context = CPC(latents, target_dim=cpc_target_dim, emb_scale=1.0, scope='cpc')
 
-    optimizer = tf.train.AdamOptimizer(learning_rate=1e-4, beta1=0.5).minimize(cpc_loss)
+    reconstructed_patch = decoder(cpc_context, anchor_layer=anchor_layer, activation='relu', norm='layer', b_train=b_train, scope='decoder')
+
+    reconstructed_patch = tf.squeeze(reconstructed_patch)
+
+    print('Reconstructed Patch Dims: ' + str(reconstructed_patch.get_shape().as_list()))
+
+    r_loss = get_residual_loss(reconstructed_patch, Y, type='l1')
+
+    optimizer = tf.train.AdamOptimizer(learning_rate=1e-4, beta1=0.5).minimize(cpc_e_loss + r_loss)
     softmax_cpc_logits = tf.nn.softmax(logits=cpc_logits)
 
     # Launch the graph in a session
@@ -280,25 +406,134 @@ def train(model_path):
         except:
             print('Start New Training. Wait ...')
 
+        batch_start = 0
+        itr_save = 0
+
         for e in range(num_epoch):
-            training_batches = zip(range(0, len(trX), batch_size),
+            training_batches = zip(range(batch_start, len(trX), batch_size),
                                    range(batch_size, len(trX) + 1, batch_size))
-            iteration = 0
+
+            batch_start += 1
 
             for start, end in training_batches:
-                _, l, s_logit, c_logits = sess.run([optimizer, cpc_loss, softmax_cpc_logits, cpc_logits],
-                                                   feed_dict={X: trX[start:end], b_train: True})
+                patch_batch = []
 
-                iteration = iteration + 1
+                # Create patches. batch_size * num_context_patches * num_context_patches * channel
+                for i in range(batch_size):
+                    patches = prepare_patches(trX[start + i], patch_size=[patch_height, patch_width],
+                                              patch_dim=[num_context_patches, num_context_patches], stride=patch_height//2)
+                    # [49, 32, 32, 3]
+                    patch_batch.append(patches)
 
-                #if iteration % 10 == 0:
-                    #print('epoch: ' + str(e) + ', loss: ' + str(l) + ', softmax: ' + str(s_logit[0]) + ', logit: ' + str(c_logits[0]))
-                print('epoch: ' + str(e) + ', loss: ' + str(l))
+                # [8, 49, 32, 32, 3]
+                patch_batch = np.array(patch_batch)
+                # [49, 8, 32, 32, 3]
+                patch_batch = np.stack(patch_batch, axis=1)
 
-            try:
-                saver.save(sess, model_path)
-            except:
-                print('Save failed')
+                for i in range(num_context_patches * num_context_patches):
+                    _, l1, l2, s_logit, c_logits, l3 = sess.run(
+                        [optimizer, cpc_e_loss, cpc_r_loss, softmax_cpc_logits, cpc_logits, r_loss],
+                        feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: True})
+                    r_patch = sess.run(
+                        [reconstructed_patch],
+                        feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: True})
+
+                    if i % ((num_context_patches * num_context_patches)//2) == 0:
+                        # print('epoch: ' + str(e) + ', entropy loss: ' + str(l1) + ', reconstruct loss: ' + str(l3))
+                        print('epoch: ' + str(e) + ', patch ' + str(i) + ', entropy loss: ' + str(l1) + ', reconstruct loss: ' + str(l3))
+                        cv2.imwrite(str(end) + '_patch_' + str(i) + '.jpg', patch_batch[i][-1])
+                        cv2.imwrite(str(end) + '_r_patch_' + str(i) + '.jpg', r_patch[0])
+
+                itr_save += 1
+
+                if itr_save % 30 == 0:
+                    try:
+                        saver.save(sess, model_path)
+                        itr_save = 0
+                    except:
+                        print('Save failed')
+
+
+def test(model_path):
+    with tf.device('/device:CPU:0'):
+        X = tf.placeholder(tf.float32, [batch_size, patch_height, patch_width, num_channel])
+        Y = tf.placeholder(tf.float32, [patch_height, patch_width, num_channel])
+
+        trX = load_images_from_folder(imgs_dirname, use_augmentation=True)
+        trX = trX.reshape((-1, input_height, input_width, num_channel))
+
+    b_train = tf.placeholder(tf.bool)
+
+    # Launch the graph in a session
+    config = tf.ConfigProto(allow_soft_placement=True)
+    config.gpu_options.allow_growth = True
+
+    latents, anchor_layer = encoder(X, activation='relu', norm='layer', b_train=b_train, scope='encoder')
+    # [Batch Size, Latent Dims]
+    print('Encoder Dims: ' + str(latents.get_shape().as_list()))
+
+    cpc_e_loss, cpc_r_loss, cpc_logits, cpc_context = CPC(latents, target_dim=cpc_target_dim, emb_scale=1.0, scope='cpc')
+
+    reconstructed_patch = decoder(cpc_context, anchor_layer=anchor_layer, activation='relu', norm='layer', b_train=b_train, scope='decoder')
+
+    reconstructed_patch = tf.squeeze(reconstructed_patch)
+
+    print('Reconstructed Patch Dims: ' + str(reconstructed_patch.get_shape().as_list()))
+
+    r_loss = get_residual_loss(reconstructed_patch, Y, type='l1')
+
+    optimizer = tf.train.AdamOptimizer(learning_rate=1e-4, beta1=0.5).minimize(cpc_e_loss + r_loss)
+    softmax_cpc_logits = tf.nn.softmax(logits=cpc_logits)
+
+    # Launch the graph in a session
+    with tf.Session(config=config) as sess:
+        sess.run(tf.global_variables_initializer())
+
+        try:
+            saver = tf.train.Saver()
+            saver.restore(sess, model_path)
+            print('Model Restored')
+        except:
+            print('Model load failed.')
+            return
+
+        test_batches = zip(range(0, len(trX), batch_size),
+                           range(batch_size, len(trX) + 1, batch_size))
+
+        sequence_num = 0
+
+        for start, end in test_batches:
+            sequence_num += 1
+            patch_batch = []
+
+            # Create patches. batch_size * num_context_patches * num_context_patches * channel
+            for i in range(batch_size):
+                patches = prepare_patches(trX[start + i], patch_size=[patch_height, patch_width],
+                                          patch_dim=[num_context_patches, num_context_patches],
+                                          stride=patch_height // 2)
+                patch_batch.append(patches)
+
+            patch_batch = np.array(patch_batch)
+            patch_batch = np.stack(patch_batch, axis=1)
+
+            print(patch_batch.shape)
+
+            residual_loss = 0.0
+            entropy_loss = 0.0
+
+            for i in range(num_context_patches * num_context_patches):
+                l1, l2, s_logit, c_logits = sess.run(
+                   [cpc_e_loss, r_loss, softmax_cpc_logits, cpc_logits],
+                   feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: False})
+
+                print('Sequence ' + str(sequence_num) + ', Patch ' + str(i) + ', entropy loss: ' + str(l1) +
+                      ', residual loss: ' + str(l2))
+
+                residual_loss += l2
+                entropy_loss += l1
+
+            print('entropy loss: ' + str(entropy_loss / (num_context_patches * num_context_patches)) +
+                  ', residual loss: ' + str(residual_loss / (num_context_patches * num_context_patches)))
 
 
 if __name__ == '__main__':
@@ -315,13 +550,15 @@ if __name__ == '__main__':
     model_path = args.model_path
 
     imgs_dirname = args.train_data
-    label_directory = args.label
     test_data = args.test_data
 
     # Input Data Dimension
-    input_height = 128 #256
-    input_width = 128 #256
+    input_height = 256
+    input_width = 256
     num_channel = 3
+    patch_width = 32
+    patch_height = 32
+    num_context_patches = 15
 
     # Dense Conv Block Base Channel Depth
     dense_block_depth = 64
@@ -329,19 +566,22 @@ if __name__ == '__main__':
     # Bottle neck(depth narrow down) depth. See Residual Dense Block and Residual Block.
     bottleneck_depth = 32
 
+    # Number of predictions: batch_size - ar_lstm_sequence_length
+    batch_size = 8  # It should be larger than sequence length
+
     # CPC Encoding latent dimension
     representation_dim = 1024
-    ar_lstm_sequence_length = 4
+    ar_lstm_sequence_length = batch_size - 1
     ar_context_dim = 1024
-    ar_lstm_hidden_layer_dims = ar_context_dim // 2
+    ar_lstm_hidden_layer_dims = ar_context_dim
+    cpc_target_dim = 512
 
     # Training parameter
-    num_epoch = 10
-
-    # Number of predictions: batch_size - ar_lstm_sequence_length
-    batch_size = 12  # It should be larger than sequence length
+    num_epoch = 100
 
     if mode == 'train':
         # Train unsupervised CPC encoder.
-        num_epoch = 20
         train(model_path)
+    elif mode == 'test':
+        num_epoch = 1
+        test(model_path)

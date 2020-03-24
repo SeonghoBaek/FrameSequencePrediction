@@ -14,10 +14,11 @@ def lstm_network(input, lstm_hidden_size_layer=64,
         # initial_state = lstm_cells.zero_state(batch_size,  tf.float32)
 
         _, states = tf.nn.dynamic_rnn(lstm_cells, input, dtype=tf.float32, initial_state=None)
-
         # print(z_sequence_output.get_shape())
+
         states_concat = tf.concat([states[0].h, states[1].h], 1)
         z_sequence_output = fc(states_concat, lstm_latent_dim, scope='linear_transform')
+        #z_sequence_output = states[1].h
 
     return z_sequence_output
 
@@ -38,8 +39,8 @@ def bi_lstm_network(input, forget_bias=1.0, lstm_hidden_size_layer=64, lstm_late
         state_concat = tf.concat([states_fw[1].h, states_bw[1].h], 1)
 
         # Linear Transform
-        #z_sequence_output = fc(state_concat, lstm_latent_dim, scope='linear_transform')
-        z_sequence_output = state_concat
+        z_sequence_output = fc(state_concat, lstm_latent_dim, use_bias=False, scope='linear_transform')
+        #z_sequence_output = states_fw[1].h
 
     return z_sequence_output
 

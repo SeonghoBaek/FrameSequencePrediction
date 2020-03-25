@@ -49,13 +49,41 @@ def get_residual_loss(value, target, type='l1', gamma=1.0):
     return loss
 
 
-def auto_regressive(latents, sequence_length=4, out_dim=256, scope='ar'):
+def get_gradient_loss(img1, img2):
+    h, w, c = img1.get_shape().as_list()
+
+    # h dim
+    a = tf.slice(img1, [1, 0, 0], [-1, -1, -1])
+    b = tf.slice(img1, [0, 0, 0], [h-1, -1, -1])
+    grad_h1 = tf.subtract(a, b)
+
+    # w dim
+    a = tf.slice(img1, [0, 1, 0], [-1, -1, -1])
+    b = tf.slice(img1, [0, 0, 0], [-1, w-1, -1])
+    grad_w1 = tf.subtract(a, b)
+
+    h, w, c = img2.get_shape().as_list()
+
+    # h dim
+    a = tf.slice(img2, [1, 0, 0], [-1, -1, -1])
+    b = tf.slice(img2, [0, 0, 0], [h-1, -1, -1])
+    grad_h2 = tf.subtract(a, b)
+
+    # w dim
+    a = tf.slice(img2, [0, 1, 0], [-1, -1, -1])
+    b = tf.slice(img2, [0, 0, 0], [-1, w-1, -1])
+    grad_w2 = tf.subtract(a, b)
+
+    return tf.reduce_mean(tf.subtract(grad_h1, grad_h2)) + tf.reduce_mean(tf.subtract(grad_w1, grad_w2))
+
+
+def auto_regressive(latents, sequence_length=4, skip=0, out_dim=256, scope='ar'):
     with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
         # [Batch Size, Latent Dims]
         #sequence_batch = tf.stack([tf.slice(latents, [i, 0], [sequence_length, -1]) for i in range(batch_size - sequence_length)], axis=0)
-        sequence_batch = tf.slice(latents, [0, 0], [sequence_length, -1])
+        sequence_batch = tf.slice(latents, [0, 0], [sequence_length-skip, -1])
         sequence_batch = tf.expand_dims(sequence_batch, 0)
-        print('Sequence Batch Shape: ' + str(sequence_batch.get_shape().as_list()))
+        print('Sequence Batch Shape: ' + str(sequence_batch.get_shape().as_list()) + ', skip: ' + str(skip))
 
         context = layers.bi_lstm_network(sequence_batch, lstm_hidden_size_layer=ar_lstm_hidden_layer_dims, lstm_latent_dim=out_dim)
         #context = layers.lstm_network(sequence_batch, lstm_hidden_size_layer=ar_lstm_hidden_layer_dims, lstm_latent_dim=out_dim)
@@ -65,7 +93,7 @@ def auto_regressive(latents, sequence_length=4, out_dim=256, scope='ar'):
 
 def CPC(latents, target_dim=64, emb_scale=0.1, scope='cpc'):
     with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
-        context = auto_regressive(latents, sequence_length=ar_lstm_sequence_length, out_dim=ar_context_dim)
+        context = auto_regressive(latents, sequence_length=ar_lstm_sequence_length, skip=2, out_dim=ar_context_dim)
         # [num_predict, ar_context_dim]
         print('AR Context Shape: ' + str(context.get_shape().as_list()))
 
@@ -196,7 +224,7 @@ def decoder(latent, anchor_layer=None, activation='swish', scope='decoder_networ
         else:
             act_func = tf.nn.sigmoid
 
-        block_depth = dense_block_depth * 4
+        block_depth = dense_block_depth
 
         l = latent
         #l = layers.fc(l, 4*4*32, non_linear_fn=act_func)
@@ -210,10 +238,14 @@ def decoder(latent, anchor_layer=None, activation='swish', scope='decoder_networ
 
         print('block 0:', str(l.get_shape().as_list()))
 
-        block_depth = dense_block_depth * 2
+        block_depth = dense_block_depth * 4
         # 8 x 8
         l = layers.deconv(l, b_size=1, scope='deconv1', filter_dims=[3, 3, block_depth],
                              stride_dims=[2, 2], padding='SAME', non_linear_fn=None)
+
+        if anchor_layer is not None:
+            l = tf.concat([l, anchor_layer], axis=3)
+            block_depth = block_depth * 2
 
         print('deconv1:', str(l.get_shape().as_list()))
 
@@ -237,9 +269,9 @@ def decoder(latent, anchor_layer=None, activation='swish', scope='decoder_networ
         l = layers.deconv(l, b_size=1, scope='deconv3', filter_dims=[3, 3, block_depth],
                           stride_dims=[2, 2], padding='SAME', non_linear_fn=None)
 
-        if anchor_layer is not None:
-            l = tf.concat([l, anchor_layer], axis=3)
-            block_depth = block_depth * 2
+        #if anchor_layer is not None:
+        #    l = tf.concat([l, anchor_layer], axis=3)
+        #    block_depth = block_depth * 2
 
         print('deconv3:', str(l.get_shape().as_list()))
 
@@ -280,12 +312,13 @@ def encoder(x, activation='relu', scope='encoder_network', norm='layer', b_train
             l = add_residual_dense_block(l, filter_dims=[3, 3, block_depth], num_layers=2,
                                          act_func=act_func, norm=norm, b_train=b_train, scope='dense_block_1_' + str(i))
 
-        anchor_layer = tf.slice(l, [l.get_shape().as_list()[0]-2, 0, 0, 0], [1, -1, -1, -1])
+        #anchor_layer = tf.slice(l, [l.get_shape().as_list()[0]-4, 0, 0, 0], [1, -1, -1, -1])
 
         # l = layers.self_attention(l, block_depth)
 
         block_depth = block_depth * 2
 
+        # [16 x 16]
         l = layers.add_dense_transition_layer(l, filter_dims=[3, 3, block_depth], stride_dims=[2, 2],
                                               act_func=act_func, norm=norm, b_train=b_train, use_pool=False,
                                               scope='tr1')
@@ -297,6 +330,7 @@ def encoder(x, activation='relu', scope='encoder_network', norm='layer', b_train
 
         block_depth = block_depth * 2
 
+        # [8 x 8]
         l = layers.add_dense_transition_layer(l, filter_dims=[3, 3, block_depth], stride_dims=[2, 2],
                                               act_func=act_func, norm=norm, b_train=b_train, use_pool=False,
                                               scope='tr2')
@@ -316,6 +350,8 @@ def encoder(x, activation='relu', scope='encoder_network', norm='layer', b_train
         for i in range(5):
             l = add_residual_block(l, filter_dims=[3, 3, block_depth], num_layers=2, act_func=act_func,
                                    norm=norm, b_train=b_train, scope='res_block_3_' + str(i), use_bottleneck=True)
+
+        anchor_layer = tf.slice(l, [l.get_shape().as_list()[0] - 2, 0, 0, 0], [1, -1, -1, -1])
 
         block_depth = block_depth * 2
 
@@ -391,8 +427,9 @@ def train(model_path):
     print('Reconstructed Patch Dims: ' + str(reconstructed_patch.get_shape().as_list()))
 
     r_loss = get_residual_loss(reconstructed_patch, Y, type='l1')
+    grad_loss = get_gradient_loss(reconstructed_patch, Y)
 
-    optimizer = tf.train.AdamOptimizer(learning_rate=1e-4, beta1=0.5).minimize(cpc_e_loss + r_loss)
+    optimizer = tf.train.AdamOptimizer(learning_rate=1e-4, beta1=0.5).minimize(cpc_e_loss + r_loss + grad_loss)
     softmax_cpc_logits = tf.nn.softmax(logits=cpc_logits)
 
     # Launch the graph in a session
@@ -406,12 +443,15 @@ def train(model_path):
         except:
             print('Start New Training. Wait ...')
 
-        batch_start = 0
+        batch_start = np.random.randint(0, 8)
         itr_save = 0
 
         for e in range(num_epoch):
             training_batches = zip(range(batch_start, len(trX), batch_size),
                                    range(batch_size, len(trX) + 1, batch_size))
+
+            if e > batch_size:
+                training_batches = shuffle(training_batches)
 
             batch_start += 1
 
@@ -430,19 +470,31 @@ def train(model_path):
                 # [49, 8, 32, 32, 3]
                 patch_batch = np.stack(patch_batch, axis=1)
 
-                for i in range(num_context_patches * num_context_patches):
-                    _, l1, l2, s_logit, c_logits, l3 = sess.run(
-                        [optimizer, cpc_e_loss, cpc_r_loss, softmax_cpc_logits, cpc_logits, r_loss],
-                        feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: True})
-                    r_patch = sess.run(
-                        [reconstructed_patch],
-                        feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: True})
+                loss_list = []
+                index_list = []
 
-                    if i % ((num_context_patches * num_context_patches)//2) == 0:
+                for i in range(num_context_patches * num_context_patches):
+                    if i not in out_list:
+                        _, l1, l2, s_logit, c_logits, l3 = sess.run(
+                            [optimizer, cpc_e_loss, cpc_r_loss, softmax_cpc_logits, cpc_logits, r_loss],
+                            feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: True})
+                            #r_patch = sess.run(
+                            #    [reconstructed_patch],
+                            #    feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: True})
+
+                        loss_list.append(l3)
+                        index_list.append(i)
+
+                    #if i % ((num_context_patches * num_context_patches)//2) == 0:
                         # print('epoch: ' + str(e) + ', entropy loss: ' + str(l1) + ', reconstruct loss: ' + str(l3))
-                        print('epoch: ' + str(e) + ', patch ' + str(i) + ', entropy loss: ' + str(l1) + ', reconstruct loss: ' + str(l3))
-                        cv2.imwrite(str(end) + '_patch_' + str(i) + '.jpg', patch_batch[i][-1])
-                        cv2.imwrite(str(end) + '_r_patch_' + str(i) + '.jpg', r_patch[0])
+                    #    print('epoch: ' + str(e) + ', frame: ' + str(end) + ', patch ' + str(i) + ', entropy loss: ' + str(l1) + ', reconstruct loss: ' + str(l3))
+                        # cv2.imwrite(str(end) + '_patch_' + str(i) + '.jpg', patch_batch[i][-1])
+                        # cv2.imwrite(str(end) + '_r_patch_' + str(i) + '.jpg', r_patch[0])
+
+                max_index = loss_list.index(max(loss_list))
+                max_index = index_list[max_index]
+
+                print('Epoch: ' + str(e) + ', Frame: ' + str(end) + ', Patch #' + str(max_index) + ':' + str(max(loss_list)))
 
                 itr_save += 1
 
@@ -459,7 +511,7 @@ def test(model_path):
         X = tf.placeholder(tf.float32, [batch_size, patch_height, patch_width, num_channel])
         Y = tf.placeholder(tf.float32, [patch_height, patch_width, num_channel])
 
-        trX = load_images_from_folder(imgs_dirname, use_augmentation=True)
+        trX = load_images_from_folder(test_data, use_augmentation=True)
         trX = trX.reshape((-1, input_height, input_width, num_channel))
 
     b_train = tf.placeholder(tf.bool)
@@ -521,19 +573,30 @@ def test(model_path):
             residual_loss = 0.0
             entropy_loss = 0.0
 
+            loss_list = []
+            index_list = []
+
             for i in range(num_context_patches * num_context_patches):
-                l1, l2, s_logit, c_logits = sess.run(
-                   [cpc_e_loss, r_loss, softmax_cpc_logits, cpc_logits],
-                   feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: False})
+                if i not in out_list:
+                    l1, l2, s_logit, c_logits = sess.run(
+                                                [cpc_e_loss, r_loss, softmax_cpc_logits, cpc_logits],
+                                                 feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: False})
 
-                print('Sequence ' + str(sequence_num) + ', Patch ' + str(i) + ', entropy loss: ' + str(l1) +
-                      ', residual loss: ' + str(l2))
+                    print('Sequence ' + str(sequence_num) + ', Patch ' + str(i) + ', entropy loss: ' + str(l1) +
+                          ', residual loss: ' + str(l2))
 
-                residual_loss += l2
-                entropy_loss += l1
+                    residual_loss += l2
+                    entropy_loss += l1
+                    loss_list.append(l2)
+                    index_list.append(i)
 
             print('entropy loss: ' + str(entropy_loss / (num_context_patches * num_context_patches)) +
                   ', residual loss: ' + str(residual_loss / (num_context_patches * num_context_patches)))
+
+            max_index = loss_list.index(max(loss_list))
+            max_index = index_list[max_index]
+
+            print('Patch #' + str(max_index) + ':' + str(max(loss_list)))
 
 
 if __name__ == '__main__':
@@ -578,6 +641,10 @@ if __name__ == '__main__':
 
     # Training parameter
     num_epoch = 100
+
+    out_list = list(range(35))
+    out_list = out_list + list(range(164, 225))
+    out_list = out_list + [42, 43, 44, 45, 46, 47, 60, 61, 75, 90, 105, 120, 121, 135, 136, 137, 138, 150, 151, 152, 153, 154]
 
     if mode == 'train':
         # Train unsupervised CPC encoder.

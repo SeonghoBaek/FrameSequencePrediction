@@ -280,7 +280,7 @@ def encoder(x, activation='relu', scope='encoder_network', norm='layer', b_train
             l = add_residual_dense_block(l, filter_dims=[3, 3, block_depth], num_layers=2,
                                          act_func=act_func, norm=norm, b_train=b_train, scope='dense_block_1_' + str(i))
 
-        anchor_layer = tf.slice(l, [l.get_shape().as_list()[0]-1, 0, 0, 0], [1, -1, -1, -1])
+        anchor_layer = tf.slice(l, [l.get_shape().as_list()[0]-2, 0, 0, 0], [1, -1, -1, -1])
 
         # l = layers.self_attention(l, block_depth)
 

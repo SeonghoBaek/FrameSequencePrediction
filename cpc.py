@@ -74,7 +74,7 @@ def get_gradient_loss(img1, img2):
     b = tf.slice(img2, [0, 0, 0], [-1, w-1, -1])
     grad_w2 = tf.subtract(a, b)
 
-    return tf.reduce_mean(tf.subtract(grad_h1, grad_h2)) + tf.reduce_mean(tf.subtract(grad_w1, grad_w2))
+    return tf.reduce_mean(tf.abs(tf.subtract(grad_h1, grad_h2))) + tf.reduce_mean(tf.abs(tf.subtract(grad_w1, grad_w2)))
 
 
 def auto_regressive(latents, sequence_length=4, skip=0, out_dim=256, scope='ar'):
@@ -443,7 +443,7 @@ def train(model_path):
         except:
             print('Start New Training. Wait ...')
 
-        batch_start = np.random.randint(0, 8)
+        batch_start = 0
         itr_save = 0
 
         for e in range(num_epoch):
@@ -471,18 +471,20 @@ def train(model_path):
                 patch_batch = np.stack(patch_batch, axis=1)
 
                 loss_list = []
+                g_loss_list = []
                 index_list = []
 
                 for i in range(num_context_patches * num_context_patches):
                     if i not in out_list:
-                        _, l1, l2, s_logit, c_logits, l3 = sess.run(
-                            [optimizer, cpc_e_loss, cpc_r_loss, softmax_cpc_logits, cpc_logits, r_loss],
+                        _, residual_loss, gradient_loss = sess.run(
+                            [optimizer, r_loss, grad_loss],
                             feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: True})
                             #r_patch = sess.run(
                             #    [reconstructed_patch],
                             #    feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: True})
 
-                        loss_list.append(l3)
+                        loss_list.append(residual_loss)
+                        g_loss_list.append(gradient_loss)
                         index_list.append(i)
 
                     #if i % ((num_context_patches * num_context_patches)//2) == 0:
@@ -492,9 +494,11 @@ def train(model_path):
                         # cv2.imwrite(str(end) + '_r_patch_' + str(i) + '.jpg', r_patch[0])
 
                 max_index = loss_list.index(max(loss_list))
-                max_index = index_list[max_index]
+                patch_index = index_list[max_index]
 
-                print('Epoch: ' + str(e) + ', Frame: ' + str(end) + ', Patch #' + str(max_index) + ':' + str(max(loss_list)))
+                print('Epoch: ' + str(e) + ', Frame: ' + str(end) +
+                      ', Patch #' + str(patch_index) + ':' + str(loss_list[max_index]) +
+                      ', ' + str(g_loss_list[max_index]))
 
                 itr_save += 1
 

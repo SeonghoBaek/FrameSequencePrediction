@@ -457,7 +457,7 @@ def fine_tune(base_model_path, task_model_path):
         for e in range(num_epoch):
             batch_start = e
             training_batches = zip(range(batch_start, len(trX), batch_size),
-                                   range(batch_size, len(trX) + 1, batch_size))
+                                   range(batch_start + batch_size, len(trX) + 1, batch_size))
 
             #if e > batch_size:
             #    training_batches = shuffle(training_batches)
@@ -566,7 +566,7 @@ def train(model_path):
         for e in range(num_epoch):
             batch_start = e
             training_batches = zip(range(batch_start, len(trX), batch_size),
-                                   range(batch_size, len(trX) + 1, batch_size))
+                                   range(batch_start + batch_size, len(trX) + 1, batch_size))
 
             total_num_batches = len(training_batches)
 

@@ -1,5 +1,5 @@
 # Video Frame Sequence Prediction using CPC
-# Author: Seongho Baek @seongho.baek@sk.com
+# Author: Seongho Baek seonghobaek@gmail.com
 
 
 import tensorflow as tf

@@ -454,18 +454,16 @@ def fine_tune(base_model_path, task_model_path):
             except:
                 print('Start New Training. Wait ...')
 
-        batch_start = 0
-        itr_save = 0
-
         for e in range(num_epoch):
+            batch_start = e
             training_batches = zip(range(batch_start, len(trX), batch_size),
                                    range(batch_size, len(trX) + 1, batch_size))
 
             #if e > batch_size:
             #    training_batches = shuffle(training_batches)
             training_batches = shuffle(training_batches)
-            batch_start += 1
             total_num_batches = len(training_batches)
+            itr_save = 0
 
             for start, end in training_batches:
                 patch_batch = []
@@ -492,19 +490,16 @@ def fine_tune(base_model_path, task_model_path):
                         _, residual_loss, gradient_loss = sess.run(
                             [optimizer, r_loss, grad_loss],
                             feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: True})
-                        # r_patch = sess.run(
-                        #    [reconstructed_patch],
-                        #    feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: True})
 
                         loss_list.append(residual_loss)
                         g_loss_list.append(gradient_loss)
                         index_list.append(i)
 
-                    # if i % ((num_context_patches * num_context_patches)//2) == 0:
-                    # print('epoch: ' + str(e) + ', entropy loss: ' + str(l1) + ', reconstruct loss: ' + str(l3))
-                    #    print('epoch: ' + str(e) + ', frame: ' + str(end) + ', patch ' + str(i) + ', entropy loss: ' + str(l1) + ', reconstruct loss: ' + str(l3))
-                    # cv2.imwrite(str(end) + '_patch_' + str(i) + '.jpg', patch_batch[i][-1])
-                    # cv2.imwrite(str(end) + '_r_patch_' + str(i) + '.jpg', r_patch[0])
+                        # r_patch = sess.run(
+                        #    [reconstructed_patch],
+                        #    feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: True})
+                        # cv2.imwrite(str(end) + '_patch_' + str(i) + '.jpg', patch_batch[i][-1])
+                        # cv2.imwrite(str(end) + '_r_patch_' + str(i) + '.jpg', r_patch[0])
 
                 max_index = loss_list.index(max(loss_list))
                 patch_index = index_list[max_index]
@@ -519,7 +514,6 @@ def fine_tune(base_model_path, task_model_path):
                     try:
                         saver = tf.train.Saver()
                         saver.save(sess, task_model_path)
-                        itr_save = 0
                     except:
                         print('Save failed')
 
@@ -569,10 +563,8 @@ def train(model_path):
         except:
             print('Start New Training. Wait ...')
 
-        batch_start = 0
-        itr_save = 0
-
         for e in range(num_epoch):
+            batch_start = e
             training_batches = zip(range(batch_start, len(trX), batch_size),
                                    range(batch_size, len(trX) + 1, batch_size))
 
@@ -581,7 +573,7 @@ def train(model_path):
             #if e > batch_size:
             #    training_batches = shuffle(training_batches)
             training_batches = shuffle(training_batches)
-            batch_start += 1
+            itr_save = 0
 
             for start, end in training_batches:
                 patch_batch = []
@@ -607,17 +599,14 @@ def train(model_path):
                         _, residual_loss, gradient_loss = sess.run(
                             [optimizer, r_loss, grad_loss],
                             feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: True})
-                            #r_patch = sess.run(
-                            #    [reconstructed_patch],
-                            #    feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: True})
 
                         loss_list.append(residual_loss)
                         g_loss_list.append(gradient_loss)
                         index_list.append(i)
 
-                    #if i % ((num_context_patches * num_context_patches)//2) == 0:
-                        # print('epoch: ' + str(e) + ', entropy loss: ' + str(l1) + ', reconstruct loss: ' + str(l3))
-                    #    print('epoch: ' + str(e) + ', frame: ' + str(end) + ', patch ' + str(i) + ', entropy loss: ' + str(l1) + ', reconstruct loss: ' + str(l3))
+                        # r_patch = sess.run(
+                        #    [reconstructed_patch],
+                        #    feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: True})
                         # cv2.imwrite(str(end) + '_patch_' + str(i) + '.jpg', patch_batch[i][-1])
                         # cv2.imwrite(str(end) + '_r_patch_' + str(i) + '.jpg', r_patch[0])
 
@@ -633,7 +622,6 @@ def train(model_path):
                 if itr_save % 30 == 0:
                     try:
                         saver.save(sess, model_path)
-                        itr_save = 0
                     except:
                         print('Save failed')
 

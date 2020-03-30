@@ -39,7 +39,7 @@ def bi_lstm_network(input, forget_bias=1.0, lstm_hidden_size_layer=64, lstm_late
         state_concat = tf.concat([states_fw[1].h, states_bw[1].h], 1)
 
         # Linear Transform
-        z_sequence_output = fc(state_concat, lstm_latent_dim, use_bias=False, scope='linear_transform')
+        z_sequence_output = fc(state_concat, lstm_latent_dim, use_bias=True, scope='linear_transform')
         #z_sequence_output = states_fw[1].h
 
     return z_sequence_output
@@ -338,43 +338,33 @@ def self_attention(x, channels, act_func=tf.nn.relu, scope='attention'):
 
         f = conv(x, scope='f_conv', filter_dims=[1, 1, channels // 8], stride_dims=[1, 1], non_linear_fn=act_func)
         f = tf.layers.max_pooling2d(f, pool_size=2, strides=2, padding='SAME')
-
-        print('attention f dims: ' + str(f.get_shape().as_list()))
+        #print('attention f dims: ' + str(f.get_shape().as_list()))
 
         g = conv(x, scope='g_conv', filter_dims=[1, 1, channels // 8], stride_dims=[1, 1], non_linear_fn=act_func)
-
-        print('attention g dims: ' + str(g.get_shape().as_list()))
+        #print('attention g dims: ' + str(g.get_shape().as_list()))
 
         h = conv(x, scope='h_conv', filter_dims=[1, 1, channels // 2], stride_dims=[1, 1], non_linear_fn=act_func)
         h = tf.layers.max_pooling2d(h, pool_size=2, strides=2, padding='SAME')
-
-        print('attention h dims: ' + str(h.get_shape().as_list()))
+        #print('attention h dims: ' + str(h.get_shape().as_list()))
 
         # N = h * w
         g = tf.reshape(g, shape=[-1, g.shape[1] * g.shape[2], g.get_shape().as_list()[-1]])
-
-        print('attention g flat dims: ' + str(g.get_shape().as_list()))
+        #print('attention g flat dims: ' + str(g.get_shape().as_list()))
 
         f = tf.reshape(f, shape=[-1, f.shape[1] * f.shape[2], f.shape[-1]])
-
-        print('attention f flat dims: ' + str(f.get_shape().as_list()))
+        #print('attention f flat dims: ' + str(f.get_shape().as_list()))
 
         s = tf.matmul(g, f, transpose_b=True)  # # [bs, N, N]
-
         beta = tf.nn.softmax(s)  # attention map
-
-        print('attention beta dims: ' + str(s.get_shape().as_list()))
+        #print('attention beta dims: ' + str(s.get_shape().as_list()))
 
         h = tf.reshape(h, shape=[-1, h.shape[1] * h.shape[2], h.shape[-1]])
-
-        print('attention h flat dims: ' + str(h.get_shape().as_list()))
+        #print('attention h flat dims: ' + str(h.get_shape().as_list()))
 
         o = tf.matmul(beta, h)  # [bs, N, C]
-
-        print('attention o dims: ' + str(o.get_shape().as_list()))
+        #print('attention o dims: ' + str(o.get_shape().as_list()))
 
         gamma = tf.get_variable("gamma", [1], initializer=tf.constant_initializer(0.0))
-
         o = tf.reshape(o, shape=[-1, height, width, num_channels // 2])  # [bs, h, w, C]
         o = conv(o, scope='attn_conv', filter_dims=[1, 1, channels], stride_dims=[1, 1], non_linear_fn=act_func)
         x = gamma * o + x

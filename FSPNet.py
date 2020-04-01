@@ -31,23 +31,22 @@ def get_image_batches(folder, start, batch_size):
         fullname = os.path.join(folder, filename).replace("\\", "/")
         #print('image file name: ' + fullname)
         jpg_img = cv2.imread(fullname)
-        # img = cv2.cvtColor(jpg_img, cv2.COLOR_BGR2RGB)  # To RGB format
+        jpg_img = cv2.cvtColor(jpg_img, cv2.COLOR_BGR2GRAY)  # To RGB format
         img = cv2.resize(jpg_img, dsize=(input_width, input_height))
 
         if img is not None:
             img = np.array(img)
             #n_img = img / 255.0
             n_img = img
-            mean = np.mean(n_img)
-            std = np.std(n_img)
-            #n_img = (n_img - mean) / std
             images.append(n_img)
 
-        g_img = get_global_context_area(jpg_img, crop_global_area)
-        g_img = cv2.resize(g_img, dsize=(global_area_width, global_area_height))
-        global_images.append(g_img)
+        #g_img = get_global_context_area(jpg_img, crop_global_area)
+        #g_img = cv2.resize(g_img, dsize=(global_area_width, global_area_height))
+        #global_images.append(g_img)
+    if len(images) < batch_size:
+        print('Batch creation failed.')
 
-    return np.array(images), np.array(global_images)
+    return np.array(images)
 
 
 def load_images_from_folder(folder, use_augmentation=False, add_noise=False):
@@ -274,7 +273,9 @@ def decoder(latent, anchor_layer=None, activation='swish', scope='decoder_networ
         #l = layers.fc(l, 4*4*32, non_linear_fn=act_func)
 
         print('Decoder Input: ' + str(latent.get_shape().as_list()))
-        l = tf.reshape(l, shape=[-1, 4, 4, 64])
+        transform_channel = latent.get_shape().as_list()[-1] // 16
+
+        l = tf.reshape(l, shape=[-1, 4, 4, transform_channel])
 
         for i in range(5):
             l = add_residual_block(l, filter_dims=[3, 3, block_depth], num_layers=2,
@@ -287,10 +288,10 @@ def decoder(latent, anchor_layer=None, activation='swish', scope='decoder_networ
         l = layers.deconv(l, b_size=1, scope='deconv1', filter_dims=[3, 3, block_depth],
                              stride_dims=[2, 2], padding='SAME', non_linear_fn=None)
 
-        #if anchor_layer is not None:
-        #    print('Decoder Anchor: ' + str(anchor_layer.get_shape().as_list()))
-        #    l = tf.concat([l, anchor_layer], axis=3)
-        #    block_depth = block_depth * 2
+        if anchor_layer is not None:
+            print('Decoder Anchor: ' + str(anchor_layer.get_shape().as_list()))
+            l = tf.concat([l, anchor_layer], axis=3)
+            block_depth = block_depth * 2
 
         print('Deconvolution 1: ' + str(l.get_shape().as_list()))
 
@@ -314,10 +315,10 @@ def decoder(latent, anchor_layer=None, activation='swish', scope='decoder_networ
         l = layers.deconv(l, b_size=1, scope='deconv3', filter_dims=[3, 3, block_depth],
                           stride_dims=[2, 2], padding='SAME', non_linear_fn=None)
 
-        if anchor_layer is not None:
-            print('Decoder Anchor: ' + str(anchor_layer.get_shape().as_list()))
-            l = tf.concat([l, anchor_layer], axis=3)
-            block_depth = block_depth * 2
+        #if anchor_layer is not None:
+        #    print('Decoder Anchor: ' + str(anchor_layer.get_shape().as_list()))
+        #    l = tf.concat([l, anchor_layer], axis=3)
+        #    block_depth = block_depth * 2
 
         print('Deconvolution 3: ' + str(l.get_shape().as_list()))
 
@@ -326,7 +327,7 @@ def decoder(latent, anchor_layer=None, activation='swish', scope='decoder_networ
                                    act_func=act_func, norm=norm, b_train=b_train,
                                    scope='block3_' + str(i), use_dilation=True)
 
-        l = layers.add_dense_transition_layer(l, filter_dims=[1, 1, 3], act_func=act_func, use_pool=False, norm=norm, b_train=b_train, scope='tr1')
+        l = layers.add_dense_transition_layer(l, filter_dims=[1, 1, num_channel], act_func=act_func, use_pool=False, norm=norm, b_train=b_train, scope='tr1')
         l = act_func(l)
 
         print('Decoder Final: ' + str(l.get_shape().as_list()))
@@ -358,7 +359,7 @@ def encoder(x, activation='relu', scope='encoder_network', norm='layer', b_train
             l = add_residual_dense_block(l, filter_dims=[3, 3, block_depth], num_layers=2,
                                          act_func=act_func, norm=norm, b_train=b_train, scope='dense_block_1_' + str(i))
 
-        anchor_layer = tf.slice(l, [l.get_shape().as_list()[0] - predict_skip - 1, 0, 0, 0], [1, -1, -1, -1])
+        #anchor_layer = tf.slice(l, [l.get_shape().as_list()[0] - predict_skip - 1, 0, 0, 0], [1, -1, -1, -1])
 
         # l = layers.self_attention(l, block_depth)
 
@@ -399,7 +400,7 @@ def encoder(x, activation='relu', scope='encoder_network', norm='layer', b_train
             l = add_residual_block(l, filter_dims=[3, 3, block_depth], num_layers=2, act_func=act_func,
                                    norm=norm, b_train=b_train, scope='res_block_3_' + str(i), use_bottleneck=True)
 
-        #anchor_layer = tf.slice(l, [l.get_shape().as_list()[0] - predict_skip - 1, 0, 0, 0], [1, -1, -1, -1])
+        anchor_layer = tf.slice(l, [l.get_shape().as_list()[0] - predict_skip - 1, 0, 0, 0], [1, -1, -1, -1])
 
         block_depth = block_depth * 2
 
@@ -418,7 +419,7 @@ def encoder(x, activation='relu', scope='encoder_network', norm='layer', b_train
 
         last_layer = act_func(l)
 
-        context = layers.global_avg_pool(last_layer, output_length=representation_dim//2, use_bias=True, scope='gp')
+        context = layers.global_avg_pool(last_layer, output_length=representation_dim, use_bias=True, scope='gp')
         print('Encoder GP Dims: ' + str(context.get_shape().as_list()))
 
     return context, anchor_layer
@@ -511,30 +512,47 @@ def global_encoder(x, activation='relu', scope='global_encoder_network', norm='l
     return context
 
 
+def check_patch_changeness(patch_list, patch_index, threshold=0.0):
+    b_valid = False
+    num_patches = len(patch_list)
+
+    #safe_rigion = num_patches // 2  # 50 % front area
+    safe_region = num_patches - predict_skip - 1
+
+    # Fast traverse
+    for i in range(safe_region-1, -1, -1):
+        current_patch = patch_list[i]
+        next_patch = patch_pixel_mean[patch_index]
+        changeness = np.abs(current_patch - next_patch)
+        m = np.mean(np.array(changeness), axis=(0, 1))
+
+        if m > threshold:
+            # print('Frame ' + str(i) + ' Patch ' + str(patch_index) + ' Changeness: ' + str(m))
+            return True
+
+    return b_valid
+
+
 def prepare_patches(image, patch_size=[24, 24], patch_dim=[7, 7], stride=12):
     patches = []
     patch_w = patch_size[0]
     patch_h = patch_size[1]
 
-    #cv2.imwrite('original.jpg', image*255.0)
-    #print('image shape: ', image.shape)
+    # print('image shape: ', image.shape)
     for h in range(patch_dim[0]):
         for w in range(patch_dim[1]):
-            #print('h:', h*stride, ' w: ', h*stride + patch_h)
-            #print('w:', w*stride, ' w: ', w*stride + patch_w)
+            # print('h:', h*stride, ' w: ', h*stride + patch_h)
+            # print('w:', w*stride, ' w: ', w*stride + patch_w)
             patch = image[h*stride:(h*stride + patch_h), w*stride:(w*stride + patch_w)].copy()
-            #sample = patch*255.0
-            #sample = cv2.cvtColor(sample, cv2.COLOR_RGB2BGR)
-            #cv2.imwrite('patch_' + str(h) + '.jpg', patch)
-            #print('Patch dims: ', patch.shape)
             patches.append(patch)
 
-    #print('Num patches: ', len(patches))
+    # print('Num patches: ', len(patches))
     return np.array(patches)
 
 
 def fine_tune(base_model_path, task_model_path):
     print('Please wait. It takes several minutes. Do not quit!')
+
     with tf.device('/device:CPU:0'):
         X = tf.placeholder(tf.float32, [batch_size, patch_height, patch_width, num_channel])
         Y = tf.placeholder(tf.float32, [patch_height, patch_width, num_channel])
@@ -550,18 +568,20 @@ def fine_tune(base_model_path, task_model_path):
     # [Batch Size, Latent Dims]
     print('Encoder Dims: ' + str(latents.get_shape().as_list()))
 
-    latents_global = global_encoder(Z, activation='swish', norm='layer', b_train=b_train, scope='g_encoder')
-    print('Global Encoder Dims: ' + str(latents_global.get_shape().as_list()))
+    # latents_global = global_encoder(Z, activation='swish', norm='layer', b_train=b_train, scope='g_encoder')
+    # print('Global Encoder Dims: ' + str(latents_global.get_shape().as_list()))
 
-    latents = tf.concat([latents, latents_global], axis=-1)
+    # latents = tf.concat([latents, latents_global], axis=-1)
 
     print('Final Encoder Dims: ' + str(latents.get_shape().as_list()))
 
-    cpc_e_loss, cpc_r_loss, cpc_logits, cpc_context = CPC(latents, target_dim=cpc_target_dim, emb_scale=1.0, scope='cpc')
+    cpc_e_loss, cpc_r_loss, cpc_logits, cpc_context = CPC(latents, target_dim=cpc_target_dim, emb_scale=1.0,
+                                                          scope='cpc')
 
-    reconstructed_patch = decoder(cpc_context, anchor_layer=anchor_layer, activation='swish', norm='layer', b_train=b_train, scope='decoder')
+    reconstructed_patch = decoder(cpc_context, anchor_layer=anchor_layer, activation='swish', norm='layer',
+                                  b_train=b_train, scope='decoder')
 
-    reconstructed_patch = tf.squeeze(reconstructed_patch)
+    reconstructed_patch = tf.squeeze(reconstructed_patch, axis=[0])
 
     print('Reconstructed Patch Dims: ' + str(reconstructed_patch.get_shape().as_list()))
 
@@ -583,8 +603,8 @@ def fine_tune(base_model_path, task_model_path):
             try:
                 variables_to_restore = [v for v in tf.trainable_variables()
                                         if v.name.split('/')[0] == 'encoder'
-                                        or v.name.split('/')[0] == 'cpc'
-                                        or v.name.split('/')[0] == 'g_encoder']
+                                        or v.name.split('/')[0] == 'cpc']
+                                        # or v.name.split('/')[0] == 'g_encoder']
                 saver = tf.train.Saver(variables_to_restore)
                 saver.restore(sess, base_model_path)
                 print('Partial Model Restored. Start fine tune. Wait ...')
@@ -594,28 +614,26 @@ def fine_tune(base_model_path, task_model_path):
         trX = os.listdir(imgs_dirname)
 
         for e in range(num_epoch):
-            batch_start = e
-            training_batches = zip(range(batch_start, len(trX), batch_size),
-                                   range(batch_start + batch_size, len(trX) + 1, batch_size))
+            total_num_batches = len(trX) - batch_size
 
-            total_num_batches = len(training_batches)
-
-            #training_batches = shuffle(training_batches)
+            # training_batches = shuffle(training_batches)
             itr_save = 0
 
-            for start, end in training_batches:
+            for start in range(total_num_batches):
                 patch_batch = []
                 img_batches, img_globals = get_image_batches(imgs_dirname, start, batch_size)
+                img_globals = np.expand_dims(img_globals, axis=-1)
 
                 # Create patches. batch_size * num_context_patches * num_context_patches * channel
                 for i in range(batch_size):
                     patches = prepare_patches(img_batches[i], patch_size=[patch_height, patch_width],
                                               patch_dim=[num_context_patches_height, num_context_patches_width],
-                                              stride=patch_height//2)
+                                              stride=patch_height // 2)
                     patch_batch.append(patches)
 
                 patch_batch = np.array(patch_batch)
                 patch_batch = np.stack(patch_batch, axis=1)
+                patch_batch = np.expand_dims(patch_batch, axis=-1)
 
                 loss_list = []
                 g_loss_list = []
@@ -623,34 +641,47 @@ def fine_tune(base_model_path, task_model_path):
                 index_list = []
 
                 for i in in_list:
-                    _, residual_loss, gradient_loss, cpc_loss = sess.run(
-                    [optimizer, r_loss, grad_loss, cpc_e_loss],
-                    feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], Z: img_globals, b_train: True})
+                    # Check validity
+                    b_valid = check_patch_changeness(patch_batch[i], i, threshold=patch_changeness_threshold)
 
+                    if b_valid is False:
+                        continue
+
+                    _, residual_loss, gradient_loss, cpc_loss = sess.run([optimizer, r_loss, grad_loss, cpc_e_loss],
+                                                                         feed_dict={X: patch_batch[i],
+                                                                                    Y: patch_batch[i][-1],
+                                                                                    Z: img_globals, b_train: True})
                     loss_list.append(residual_loss)
                     g_loss_list.append(gradient_loss)
                     c_loss_list.append(cpc_loss)
                     index_list.append(i)
 
-                    #if i == 37:
-                    #    r_patch = sess.run([reconstructed_patch], feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: True})
-                    #    cv2.imwrite(str(end) + '_patch_' + str(i) + '.jpg', patch_batch[i][-1])
-                    #    cv2.imwrite(str(end) + '_r_patch_' + str(i) + '.jpg', r_patch[0])
+                    # r_patch = sess.run([reconstructed_patch], feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: True})
+                    # cv2.imwrite(str(start+batch_size) + '_patch_' + str(i) + '.jpg', patch_batch[i][-1])
+                    # cv2.imwrite(str(start+batch_size) + '_r_patch_' + str(i) + '.jpg', r_patch[0])
 
-                max_index = loss_list.index(max(loss_list))
-                patch_index = index_list[max_index]
+                if len(loss_list) > 0:
+                    max_index = loss_list.index(max(loss_list))
+                    patch_index = index_list[max_index]
+
+                    print('Epoch: ' + str(e) + ', ' + str(start + 1) + '/' + str(total_num_batches) +
+                          ', Target Frame: ' + str(start + batch_size) +
+                          ', Trained: ' + str(index_list))
+                    print('       Worst #' + str(patch_index) + ': ' +
+                          ' residual ' + str(loss_list[max_index]) +
+                          ', gradient ' + str(g_loss_list[max_index]) +
+                          ', cpc ' + str(c_loss_list[max_index]))
+                else:
+                    print('Epoch: ' + str(e) + ', ' + str(start + 1) + '/' + str(total_num_batches) +
+                          ', Target Frame: ' + str(start + batch_size))
+
                 itr_save += 1
-
-                print('Epoch: ' + str(e) + ', ' + str(itr_save) + '/' + str(total_num_batches) +
-                      ', Frame: ' + str(end) +
-                      ', Patch #' + str(patch_index) + ': ' +
-                      ' residual ' + str(loss_list[max_index]) +
-                      ', gradient ' + str(g_loss_list[max_index]) +
-                      ', cpc ' + str(c_loss_list[max_index]))
 
                 if itr_save % 30 == 0:
                     try:
+                        print('Saving Model...')
                         saver.save(sess, task_model_path)
+                        print('Saved.')
                     except:
                         print('Save failed')
 
@@ -663,9 +694,6 @@ def train(model_path):
         Y = tf.placeholder(tf.float32, [patch_height, patch_width, num_channel])
         Z = tf.placeholder(tf.float32, [batch_size, global_area_height, global_area_width, num_channel])
 
-        #trX = load_images_from_folder(imgs_dirname, use_augmentation=True)
-        #trX = trX.reshape((-1, input_height, input_width, num_channel))
-
     b_train = tf.placeholder(tf.bool)
 
     # Launch the graph in a session
@@ -676,10 +704,10 @@ def train(model_path):
     # [Batch Size, Latent Dims]
     print('Encoder Dims: ' + str(latents.get_shape().as_list()))
 
-    latents_global = global_encoder(Z, activation='swish', norm='layer', b_train=b_train, scope='g_encoder')
-    print('Global Encoder Dims: ' + str(latents_global.get_shape().as_list()))
+    #latents_global = global_encoder(Z, activation='swish', norm='layer', b_train=b_train, scope='g_encoder')
+    #print('Global Encoder Dims: ' + str(latents_global.get_shape().as_list()))
 
-    latents = tf.concat([latents, latents_global], axis=-1)
+    #latents = tf.concat([latents, latents_global], axis=-1)
 
     print('Final Encoder Dims: ' + str(latents.get_shape().as_list()))
 
@@ -687,7 +715,7 @@ def train(model_path):
 
     reconstructed_patch = decoder(cpc_context, anchor_layer=anchor_layer, activation='swish', norm='layer', b_train=b_train, scope='decoder')
 
-    reconstructed_patch = tf.squeeze(reconstructed_patch)
+    reconstructed_patch = tf.squeeze(reconstructed_patch, axis=[0])
 
     print('Reconstructed Patch Dims: ' + str(reconstructed_patch.get_shape().as_list()))
 
@@ -709,20 +737,18 @@ def train(model_path):
             print('Start New Training. Wait ...')
 
         trX = os.listdir(imgs_dirname)
+        print('Number of Training Images: ' + str(len(trX)))
 
         for e in range(num_epoch):
-            batch_start = e
-            training_batches = zip(range(batch_start, len(trX), batch_size),
-                                   range(batch_start + batch_size, len(trX) + 1, batch_size))
-
-            total_num_batches = len(training_batches)
+            total_num_batches = len(trX) - batch_size
 
             #training_batches = shuffle(training_batches)
             itr_save = 0
 
-            for start, end in training_batches:
+            for start in range(total_num_batches):
                 patch_batch = []
-                img_batches, img_globals = get_image_batches(imgs_dirname, start, batch_size)
+                img_batches = get_image_batches(imgs_dirname, start, batch_size)
+                #img_globals = np.expand_dims(img_globals, axis=-1)
 
                 # Create patches. batch_size * num_context_patches * num_context_patches * channel
                 for i in range(batch_size):
@@ -733,6 +759,7 @@ def train(model_path):
 
                 patch_batch = np.array(patch_batch)
                 patch_batch = np.stack(patch_batch, axis=1)
+                patch_batch = np.expand_dims(patch_batch, axis=-1)
 
                 loss_list = []
                 g_loss_list = []
@@ -740,34 +767,45 @@ def train(model_path):
                 index_list = []
 
                 for i in in_list:
-                    _, residual_loss, gradient_loss, cpc_loss = sess.run(
-                    [optimizer, r_loss, grad_loss, cpc_e_loss],
-                    feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], Z: img_globals, b_train: True})
+                    # Check validity
+                    b_valid = check_patch_changeness(patch_batch[i], i, threshold=patch_changeness_threshold)
 
+                    if b_valid is False:
+                        continue
+
+                    _, residual_loss, gradient_loss, cpc_loss = sess.run([optimizer, r_loss, grad_loss, cpc_e_loss],
+                                                                         feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: True})
                     loss_list.append(residual_loss)
                     g_loss_list.append(gradient_loss)
                     c_loss_list.append(cpc_loss)
                     index_list.append(i)
 
-                    #if i == 37:
-                    #    r_patch = sess.run([reconstructed_patch], feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: True})
-                    #    cv2.imwrite(str(end) + '_patch_' + str(i) + '.jpg', patch_batch[i][-1])
-                    #    cv2.imwrite(str(end) + '_r_patch_' + str(i) + '.jpg', r_patch[0])
+                    #r_patch = sess.run([reconstructed_patch], feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: True})
+                    #cv2.imwrite(str(start+batch_size) + '_patch_' + str(i) + '.jpg', patch_batch[i][-1])
+                    #cv2.imwrite(str(start+batch_size) + '_r_patch_' + str(i) + '.jpg', r_patch[0])
 
-                max_index = loss_list.index(max(loss_list))
-                patch_index = index_list[max_index]
+                if len(loss_list) > 0:
+                    max_index = loss_list.index(max(loss_list))
+                    patch_index = index_list[max_index]
+
+                    print('Epoch: ' + str(e) + ', ' + str(start + 1) + '/' + str(total_num_batches) +
+                          ', Target Frame: ' + str(start + batch_size) +
+                          ', Trained: ' + str(index_list))
+                    print('       Worst #' + str(patch_index) + ': ' +
+                          ' residual ' + str(loss_list[max_index]) +
+                          ', gradient ' + str(g_loss_list[max_index]) +
+                          ', cpc ' + str(c_loss_list[max_index]))
+                else:
+                    print('Epoch: ' + str(e) + ', ' + str(start + 1) + '/' + str(total_num_batches) +
+                          ', Target Frame: ' + str(start + batch_size))
+
                 itr_save += 1
 
-                print('Epoch: ' + str(e) + ', ' + str(itr_save) + '/' + str(total_num_batches) +
-                      ', Frame: ' + str(end) +
-                      ', Patch #' + str(patch_index) + ': ' +
-                      ' residual ' + str(loss_list[max_index]) +
-                      ', gradient ' + str(g_loss_list[max_index]) +
-                      ', cpc ' + str(c_loss_list[max_index]))
-
-                if itr_save % 30 == 0:
+                if itr_save % 100 == 0:
                     try:
+                        print('Saving model...')
                         saver.save(sess, model_path)
+                        print('Saved.')
                     except:
                         print('Save failed')
 
@@ -777,9 +815,6 @@ def test(model_path):
         X = tf.placeholder(tf.float32, [batch_size, patch_height, patch_width, num_channel])
         Y = tf.placeholder(tf.float32, [patch_height, patch_width, num_channel])
         Z = tf.placeholder(tf.float32, [batch_size, global_area_height, global_area_width, num_channel])
-
-        #trX = load_images_from_folder(imgs_dirname, use_augmentation=True)
-        #trX = trX.reshape((-1, input_height, input_width, num_channel))
 
     b_train = tf.placeholder(tf.bool)
 
@@ -791,10 +826,10 @@ def test(model_path):
     # [Batch Size, Latent Dims]
     print('Encoder Dims: ' + str(latents.get_shape().as_list()))
 
-    latents_global = global_encoder(Z, activation='swish', norm='layer', b_train=b_train, scope='g_encoder')
-    print('Global Encoder Dims: ' + str(latents_global.get_shape().as_list()))
+    #latents_global = global_encoder(Z, activation='swish', norm='layer', b_train=b_train, scope='g_encoder')
+    #print('Global Encoder Dims: ' + str(latents_global.get_shape().as_list()))
 
-    latents = tf.concat([latents, latents_global], axis=-1)
+    #latents = tf.concat([latents, latents_global], axis=-1)
 
     print('Final Encoder Dims: ' + str(latents.get_shape().as_list()))
 
@@ -802,7 +837,7 @@ def test(model_path):
 
     reconstructed_patch = decoder(cpc_context, anchor_layer=anchor_layer, activation='swish', norm='layer', b_train=b_train, scope='decoder')
 
-    reconstructed_patch = tf.squeeze(reconstructed_patch)
+    reconstructed_patch = tf.squeeze(reconstructed_patch, axis=[0])
 
     print('Reconstructed Patch Dims: ' + str(reconstructed_patch.get_shape().as_list()))
 
@@ -821,15 +856,13 @@ def test(model_path):
             print('Model load failed.')
             return
 
-        #test_batches = zip(range(0, len(trX), batch_size),
-        #                   range(batch_size, len(trX) + 1, batch_size))
-
         sequence_num = 0
         trX = os.listdir(test_data)
 
         for start in range(batch_size * (len(trX) // batch_size)):
             patch_batch = []
             img_batches, global_imgs = get_image_batches(test_data, start, batch_size)
+            global_imgs = np.expand_dims(global_imgs, axis=-1)
 
             # Create patches. batch_size * num_context_patches * num_context_patches * channel
             for i in range(batch_size):
@@ -840,8 +873,7 @@ def test(model_path):
 
             patch_batch = np.array(patch_batch)
             patch_batch = np.stack(patch_batch, axis=1)
-
-            #print(patch_batch.shape)
+            patch_batch = np.expand_dims(patch_batch, axis=-1)
 
             residual_loss_list = []
             entropy_loss_list = []
@@ -850,26 +882,29 @@ def test(model_path):
             score_list = []
 
             for i in in_list:
+                if check_patch_changeness(patch_batch[i], i, threshold=patch_changeness_threshold) is False:
+                    continue
+
                 l1, l2, l3 = sess.run([cpc_e_loss, r_loss, grad_loss],
                                       feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], Z: global_imgs, b_train: False})
-                score = (1/(1+np.exp((-l1)))) * l2
+                r_patch = sess.run([reconstructed_patch], feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: True})
+                cv2.imwrite(str(start+batch_size) + '_patch_' + str(i) + '.jpg', patch_batch[i][-1])
+                cv2.imwrite(str(start+batch_size) + '_r_patch_' + str(i) + '.jpg', r_patch[0])
+                #score = (1/(1+np.exp((-l1)))) * l2
+                score = l2
                 score_list.append(score)
                 entropy_loss_list.append(l1)
                 residual_loss_list.append(l2)
                 gradient_loss_list.append(l3)
                 index_list.append(i)
 
-            score_min = min(score_list)
-            score_max = max(score_list)
-
-            norm_score_list = [score_max * (s - score_min)/(score_max - score_min + 0.1) for s in score_list]
-
-            for s in range(len(norm_score_list)):
-                print('Sequence ' + str(sequence_num) + ', Patch ' + str(index_list[s]) +
-                      ', score: ' + str(norm_score_list[s]) +
-                      ', entropy loss: ' + str(entropy_loss_list[s]) +
-                      ', residual loss: ' + str(residual_loss_list[s]) +
-                      ', gradient loss: ' + str(gradient_loss_list[s]))
+            for s in range(len(score_list)):
+                if score_list[s] > anomaly_score:
+                    print('Sequence ' + str(sequence_num + batch_size) + ', Patch ' + str(index_list[s]) +
+                          ', score: ' + str(score_list[s]) +
+                          ', entropy loss: ' + str(entropy_loss_list[s]) +
+                          ', residual loss: ' + str(residual_loss_list[s]) +
+                          ', gradient loss: ' + str(gradient_loss_list[s]))
 
             sequence_num += 1
 
@@ -895,7 +930,7 @@ if __name__ == '__main__':
     # Input Data Dimension
     input_height = 256
     input_width = 480
-    num_channel = 3
+    num_channel = 1
     patch_width = 32
     patch_height = 32
     num_context_patches_width = 29
@@ -911,9 +946,9 @@ if __name__ == '__main__':
     batch_size = 16  # It should be larger than sequence length
 
     # CPC Encoding latent dimension
-    representation_dim = 1024
+    representation_dim = 2048
     ar_lstm_sequence_length = batch_size - 1
-    ar_context_dim = 1024
+    ar_context_dim = 2048
     ar_lstm_hidden_layer_dims = ar_context_dim
     cpc_target_dim = 512
 
@@ -921,6 +956,10 @@ if __name__ == '__main__':
     num_epoch = 100
 
     predict_skip = 2
+
+    pixel_brightness_threshold = 200.0
+    patch_changeness_threshold = 25.0
+    anomaly_score = 1000.0
 
     # (x=960, y=160)
     global_context_area = [440, 640]
@@ -934,7 +973,30 @@ if __name__ == '__main__':
     in_list = in_list + list(range(158, 170))
     in_list = in_list + list(range(190, 198))
     in_list = in_list + list(range(219, 226))
-    in_list = in_list + list(range(249, 254))
+    #in_list = in_list + list(range(249, 254))
+
+    # Average pixel intensity check with cold images.
+    cold_img_batches = get_image_batches('cold_data', 59, batch_size)
+    cold_batches = []
+
+    # Create patches. batch_size * num_context_patches * num_context_patches * channel
+    for i in range(batch_size):
+        cold_patches = prepare_patches(cold_img_batches[i], patch_size=[patch_height, patch_width],
+                                       patch_dim=[num_context_patches_height, num_context_patches_width],
+                                       stride=patch_height // 2)
+
+        cold_batches.append(cold_patches)
+
+    cold_batches = np.array(cold_batches)
+    cold_batches = np.stack(cold_batches, axis=1)
+    cold_batches = np.expand_dims(cold_batches, axis=-1)
+
+    patch_pixel_mean = []
+
+    for i in range(len(cold_batches)):
+        patch_pixel_mean.append(np.mean(cold_batches[i], axis=0))
+
+    patch_pixel_mean = np.array(patch_pixel_mean)
 
     if mode == 'train':
         # Train unsupervised CPC encoder.

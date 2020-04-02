@@ -1,7 +1,6 @@
 # Video Frame Sequence Prediction using CPC
 # Author: Seongho Baek seonghobaek@gmail.com
 
-
 import tensorflow as tf
 import layers
 from sklearn.utils import shuffle
@@ -512,25 +511,33 @@ def global_encoder(x, activation='relu', scope='global_encoder_network', norm='l
     return context
 
 
-def check_patch_changeness(patch_list, patch_index, threshold=0.0):
-    b_valid = False
+def check_patch_changeness(patch_list, patch_index, validity=0, threshold=0.0):
     num_patches = len(patch_list)
 
-    #safe_rigion = num_patches // 2  # 50 % front area
-    safe_region = num_patches - predict_skip - 1
+    safe_region = 1 + num_patches // 2  # 50 % front area
+    #safe_region = num_patches - predict_skip - 1
 
     # Fast traverse
-    for i in range(safe_region-1, -1, -1):
-        current_patch = patch_list[i]
+    if validity == 1:
+        for i in range(safe_region-1, -1, -1):
+            current_patch = patch_list[i]
+            next_patch = patch_pixel_mean[patch_index]
+            changeness = np.abs(current_patch - next_patch)
+            m = np.mean(np.array(changeness), axis=(0, 1))
+
+            if m > threshold:
+                # print('Frame ' + str(i) + ' Patch ' + str(patch_index) + ' Changeness: ' + str(m))
+                return 1
+    else:
+        current_patch = patch_list[safe_region-1]
         next_patch = patch_pixel_mean[patch_index]
         changeness = np.abs(current_patch - next_patch)
         m = np.mean(np.array(changeness), axis=(0, 1))
 
         if m > threshold:
-            # print('Frame ' + str(i) + ' Patch ' + str(patch_index) + ' Changeness: ' + str(m))
-            return True
+            return 1
 
-    return b_valid
+    return 0
 
 
 def prepare_patches(image, patch_size=[24, 24], patch_dim=[7, 7], stride=12):
@@ -611,54 +618,59 @@ def fine_tune(base_model_path, task_model_path):
             except:
                 print('Start New Training. Wait ...')
 
-        trX = os.listdir(imgs_dirname)
+                trX = os.listdir(train_data)
+                print('Number of Training Images: ' + str(len(trX)))
+                total_num_batches = len(trX) - batch_size
 
-        for e in range(num_epoch):
-            total_num_batches = len(trX) - batch_size
+                for e in range(num_epoch):
+                    itr_save = 0
+                    prev_patch_batch = []
+                    valid_status = np.zeros(num_context_patches_width * num_context_patches_height)
 
-            # training_batches = shuffle(training_batches)
-            itr_save = 0
+                    for start in range(total_num_batches):
+                        if len(prev_patch_batch) > 0:
+                            prev_patch_batch.pop(0)
 
-            for start in range(total_num_batches):
-                patch_batch = []
-                img_batches, img_globals = get_image_batches(imgs_dirname, start, batch_size)
-                img_globals = np.expand_dims(img_globals, axis=-1)
+                        set_size = batch_size - len(prev_patch_batch)
+                        if start > 0:
+                            img_batches = get_image_batches(train_data, start + batch_size, set_size)
+                        else:
+                            img_batches = get_image_batches(train_data, start, set_size)
 
-                # Create patches. batch_size * num_context_patches * num_context_patches * channel
-                for i in range(batch_size):
-                    patches = prepare_patches(img_batches[i], patch_size=[patch_height, patch_width],
-                                              patch_dim=[num_context_patches_height, num_context_patches_width],
-                                              stride=patch_height // 2)
-                    patch_batch.append(patches)
+                        # img_globals = np.expand_dims(img_globals, axis=-1)
 
-                patch_batch = np.array(patch_batch)
-                patch_batch = np.stack(patch_batch, axis=1)
-                patch_batch = np.expand_dims(patch_batch, axis=-1)
+                        # Create patches. batch_size * num_context_patches * num_context_patches * channel
+                        for i in range(set_size):
+                            patches = prepare_patches(img_batches[i], patch_size=[patch_height, patch_width],
+                                                      patch_dim=[num_context_patches_height, num_context_patches_width],
+                                                      stride=patch_height // 2)
+                            prev_patch_batch.append(patches)
 
-                loss_list = []
-                g_loss_list = []
-                c_loss_list = []
-                index_list = []
+                        patch_batch = np.array(prev_patch_batch)
+                        patch_batch = np.stack(patch_batch, axis=1)
+                        patch_batch = np.expand_dims(patch_batch, axis=-1)
 
-                for i in in_list:
-                    # Check validity
-                    b_valid = check_patch_changeness(patch_batch[i], i, threshold=patch_changeness_threshold)
+                        loss_list = []
+                        g_loss_list = []
+                        c_loss_list = []
+                        index_list = []
 
-                    if b_valid is False:
-                        continue
+                        for i in in_list:
+                            # Check validity
+                            b_valid = check_patch_changeness(patch_batch[i], i, valid_status[i],
+                                                             threshold=patch_changeness_threshold)
+                            valid_status[i] = b_valid
 
-                    _, residual_loss, gradient_loss, cpc_loss = sess.run([optimizer, r_loss, grad_loss, cpc_e_loss],
-                                                                         feed_dict={X: patch_batch[i],
-                                                                                    Y: patch_batch[i][-1],
-                                                                                    Z: img_globals, b_train: True})
-                    loss_list.append(residual_loss)
-                    g_loss_list.append(gradient_loss)
-                    c_loss_list.append(cpc_loss)
-                    index_list.append(i)
+                            if b_valid == 0:
+                                continue
 
-                    # r_patch = sess.run([reconstructed_patch], feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: True})
-                    # cv2.imwrite(str(start+batch_size) + '_patch_' + str(i) + '.jpg', patch_batch[i][-1])
-                    # cv2.imwrite(str(start+batch_size) + '_r_patch_' + str(i) + '.jpg', r_patch[0])
+                            _, residual_loss, gradient_loss, cpc_loss = sess.run(
+                                [optimizer, r_loss, grad_loss, cpc_e_loss],
+                                feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: True})
+                            loss_list.append(residual_loss)
+                            g_loss_list.append(gradient_loss)
+                            c_loss_list.append(cpc_loss)
+                            index_list.append(i)
 
                 if len(loss_list) > 0:
                     max_index = loss_list.index(max(loss_list))
@@ -736,28 +748,35 @@ def train(model_path):
         except:
             print('Start New Training. Wait ...')
 
-        trX = os.listdir(imgs_dirname)
+        trX = os.listdir(train_data)
         print('Number of Training Images: ' + str(len(trX)))
+        total_num_batches = len(trX) - batch_size
 
         for e in range(num_epoch):
-            total_num_batches = len(trX) - batch_size
-
-            #training_batches = shuffle(training_batches)
             itr_save = 0
+            prev_patch_batch = []
+            valid_status = np.zeros(num_context_patches_width * num_context_patches_height)
 
             for start in range(total_num_batches):
-                patch_batch = []
-                img_batches = get_image_batches(imgs_dirname, start, batch_size)
+                if len(prev_patch_batch) > 0:
+                    prev_patch_batch.pop(0)
+
+                set_size = batch_size - len(prev_patch_batch)
+                if start > 0:
+                    img_batches = get_image_batches(train_data, start + batch_size, set_size)
+                else:
+                    img_batches = get_image_batches(train_data, start, set_size)
+
                 #img_globals = np.expand_dims(img_globals, axis=-1)
 
                 # Create patches. batch_size * num_context_patches * num_context_patches * channel
-                for i in range(batch_size):
+                for i in range(set_size):
                     patches = prepare_patches(img_batches[i], patch_size=[patch_height, patch_width],
                                               patch_dim=[num_context_patches_height, num_context_patches_width],
                                               stride=patch_height//2)
-                    patch_batch.append(patches)
+                    prev_patch_batch.append(patches)
 
-                patch_batch = np.array(patch_batch)
+                patch_batch = np.array(prev_patch_batch)
                 patch_batch = np.stack(patch_batch, axis=1)
                 patch_batch = np.expand_dims(patch_batch, axis=-1)
 
@@ -768,9 +787,10 @@ def train(model_path):
 
                 for i in in_list:
                     # Check validity
-                    b_valid = check_patch_changeness(patch_batch[i], i, threshold=patch_changeness_threshold)
+                    b_valid = check_patch_changeness(patch_batch[i], i, valid_status[i], threshold=patch_changeness_threshold)
+                    valid_status[i] = b_valid
 
-                    if b_valid is False:
+                    if b_valid == 0:
                         continue
 
                     _, residual_loss, gradient_loss, cpc_loss = sess.run([optimizer, r_loss, grad_loss, cpc_e_loss],
@@ -858,38 +878,52 @@ def test(model_path):
 
         sequence_num = 0
         trX = os.listdir(test_data)
+        total_num_batches = len(trX) - batch_size
+        print('Total Test Number of Batches: ' + str(total_num_batches))
 
-        for start in range(batch_size * (len(trX) // batch_size)):
-            patch_batch = []
-            img_batches, global_imgs = get_image_batches(test_data, start, batch_size)
-            global_imgs = np.expand_dims(global_imgs, axis=-1)
+        valid_status = np.zeros(num_context_patches_width * num_context_patches_height)
+        prev_patch_batch = []
+
+        for start in range(total_num_batches):
+            if len(prev_patch_batch) > 0:
+                prev_patch_batch.pop(0)
+
+            set_size = batch_size - len(prev_patch_batch)
+            if start > 0:
+                img_batches = get_image_batches(test_data, start + batch_size, set_size)
+            else:
+                img_batches = get_image_batches(test_data, start, set_size)
 
             # Create patches. batch_size * num_context_patches * num_context_patches * channel
-            for i in range(batch_size):
+            for i in range(set_size):
                 patches = prepare_patches(img_batches[i], patch_size=[patch_height, patch_width],
                                           patch_dim=[num_context_patches_height, num_context_patches_width],
-                                          stride=patch_height//2)
-                patch_batch.append(patches)
+                                          stride=patch_height // 2)
+                prev_patch_batch.append(patches)
 
-            patch_batch = np.array(patch_batch)
+            patch_batch = np.array(prev_patch_batch)
             patch_batch = np.stack(patch_batch, axis=1)
             patch_batch = np.expand_dims(patch_batch, axis=-1)
 
-            residual_loss_list = []
             entropy_loss_list = []
+            residual_loss_list = []
             gradient_loss_list = []
             index_list = []
             score_list = []
 
             for i in in_list:
-                if check_patch_changeness(patch_batch[i], i, threshold=patch_changeness_threshold) is False:
+                # Check validity
+                b_valid = check_patch_changeness(patch_batch[i], i, valid_status[i], threshold=patch_changeness_threshold)
+                valid_status[i] = b_valid
+
+                if b_valid == 0:
                     continue
 
                 l1, l2, l3 = sess.run([cpc_e_loss, r_loss, grad_loss],
-                                      feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], Z: global_imgs, b_train: False})
-                r_patch = sess.run([reconstructed_patch], feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: True})
-                cv2.imwrite(str(start+batch_size) + '_patch_' + str(i) + '.jpg', patch_batch[i][-1])
-                cv2.imwrite(str(start+batch_size) + '_r_patch_' + str(i) + '.jpg', r_patch[0])
+                                      feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: False})
+                #r_patch = sess.run([reconstructed_patch], feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: True})
+                #cv2.imwrite(str(start+batch_size) + '_patch_' + str(i) + '.jpg', patch_batch[i][-1])
+                #cv2.imwrite(str(start+batch_size) + '_r_patch_' + str(i) + '.jpg', r_patch[0])
                 #score = (1/(1+np.exp((-l1)))) * l2
                 score = l2
                 score_list.append(score)
@@ -924,7 +958,7 @@ if __name__ == '__main__':
     mode = args.mode
     model_path = args.model_path
 
-    imgs_dirname = args.train_data
+    train_data = args.train_data
     test_data = args.test_data
 
     # Input Data Dimension
@@ -959,7 +993,7 @@ if __name__ == '__main__':
 
     pixel_brightness_threshold = 200.0
     patch_changeness_threshold = 25.0
-    anomaly_score = 1000.0
+    anomaly_score = 1200.0
 
     # (x=960, y=160)
     global_context_area = [440, 640]

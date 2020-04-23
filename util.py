@@ -3,6 +3,8 @@ import numpy as np
 import tensorflow as tf
 import errno
 import os
+import cv2
+
 
 def get_batch(X, X_, size):
     # X, X_ must be nd-array
@@ -94,6 +96,16 @@ def generate_samples(dim, num_inlier, num_outlier, normalize=True):
     return inlier, outlier
 
 
+def add_gaussian_pixel_noise(image, mean=0.0, var=0.1):
+    row, col = image.shape
+    #print('Add gaussian noise: ', image.shape)
+    sigma = var**0.5
+    gauss = np.random.normal(mean, sigma, (row, col))
+    gauss = gauss.reshape(row, col)
+    noisy = image + gauss
+    return noisy
+
+
 def add_gaussian_noise(input_layer, mean, std):
     if std < 0.0:
         return input_layer
@@ -120,3 +132,75 @@ def mkdirP(path):
             pass
         else:
             raise
+
+
+def open_capture_dev(file_path):
+    try:
+        vidcap = cv2.VideoCapture(file_path)
+        success, _ = vidcap.read()
+
+        if success is False:
+            print('File Reading Failed. ' + file_path)
+            return None
+    except:
+        print('Error Opening Video Capture Device or File' + file_path)
+        return None
+
+    return vidcap
+
+
+def get_frame_sequece(c_dev, sequence_length, skip=4, b_crop=False, crop_box=[0, 0, 0, 0]):
+    sequence = 1
+    count = 0
+    target_length = sequence_length
+
+    if sequence_length < 0:
+        target_length = 1
+    
+    while True:
+        success, img = c_dev.read()
+
+        if success is True:
+            count += 1
+
+            if count % skip == 0:
+                if sequence_length > 0 and count > sequence_length:
+                    break
+                if b_crop is True:
+                    img = img[crop_box[0]:crop_box[1], crop_box[2]:crop_box[3]]
+                cv2.imwrite(str(sequence) + '.jpg', img)
+                sequence += 1
+        else:
+            print('File Reading Failed.')
+            return None
+
+    return sequence
+
+
+def read_stream(dev_file, crop_box=[56, 1080, 0, 1920]):
+    cap_dev = open_capture_dev(dev_file)
+
+    if cap_dev is not None:
+        #images = get_frame_sequece(cap_dev, -1, skip=15, b_crop=True, crop_box=[140, 840, 820, 1520])
+        images = get_frame_sequece(cap_dev, -1, skip=8, b_crop=True, crop_box=[56, 1080, 0, 1920])
+        print(len(images))
+
+
+def get_image_gradients(in_image):
+    # in_image = numpy array
+    h, w, c = in_image.shape
+
+    # h dim
+    a = in_image[1:, :, :]
+    b = in_image[:-1, :, :]
+    grad_h = a - b
+
+    # w dim
+    a = in_image[:, 1:, :]
+    b = in_image[:, :-1, :]
+    grad_w = a - b
+
+    return grad_h, grad_w
+
+# read_stream('/train.mp4')
+

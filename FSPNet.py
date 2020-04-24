@@ -117,39 +117,27 @@ def get_diff_loss(anchor, positive, negative):
 
 
 def get_gradient_loss(img1, img2):
-    h, w, c = img1.get_shape().as_list()
+    image_a = tf.expand_dims(img1, axis=0)
+    image_b = tf.expand_dims(img2, axis=0)
 
-    # h dim
-    a = tf.slice(img1, [1, 0, 0], [-1, -1, -1])
-    b = tf.slice(img1, [0, 0, 0], [h-1, -1, -1])
-    grad_h1 = tf.subtract(a, b)
+    dx_a, dy_a = tf.image.image_gradients(image_a)
+    dx_b, dy_b = tf.image.image_gradients(image_b)
 
-    # w dim
-    a = tf.slice(img1, [0, 1, 0], [-1, -1, -1])
-    b = tf.slice(img1, [0, 0, 0], [-1, w-1, -1])
-    grad_w1 = tf.subtract(a, b)
+    v_a = tf.reduce_mean(tf.image.total_variation(image_a))
+    v_b = tf.reduce_mean(tf.image.total_variation(image_b))
 
-    h, w, c = img2.get_shape().as_list()
+    #loss = tf.abs(tf.subtract(v_a, v_b))
+    loss = tf.reduce_mean(tf.abs(tf.subtract(dx_a, dx_b))) + tf.reduce_mean(tf.abs(tf.subtract(dy_a, dy_b)))
 
-    # h dim
-    a = tf.slice(img2, [1, 0, 0], [-1, -1, -1])
-    b = tf.slice(img2, [0, 0, 0], [h-1, -1, -1])
-    grad_h2 = tf.subtract(a, b)
-
-    # w dim
-    a = tf.slice(img2, [0, 1, 0], [-1, -1, -1])
-    b = tf.slice(img2, [0, 0, 0], [-1, w-1, -1])
-    grad_w2 = tf.subtract(a, b)
-
-    return tf.reduce_mean(tf.abs(tf.subtract(grad_h1, grad_h2))) + tf.reduce_mean(tf.abs(tf.subtract(grad_w1, grad_w2)))
+    return loss
 
 
 def auto_regressive(latents, sequence_length=4, skip=0, out_dim=256, scope='ar'):
     with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
         # [Batch Size, Latent Dims]
-        #sequence_batch = tf.stack([tf.slice(latents, [i, 0], [sequence_length, -1]) for i in range(batch_size - sequence_length)], axis=0)
-        sequence_batch = tf.slice(latents, [0, 0], [sequence_length-skip, -1])
-        sequence_batch = tf.expand_dims(sequence_batch, 0)
+        sequence_batch = tf.stack([tf.slice(latents, [i, 0], [sequence_length, -1]) for i in range(batch_size - sequence_length - skip)], axis=0)
+        #sequence_batch = tf.slice(latents, [0, 0], [sequence_length-skip, -1])
+        #sequence_batch = tf.expand_dims(sequence_batch, 0)
         print('Sequence Batch Shape: ' + str(sequence_batch.get_shape().as_list()) + ', skip: ' + str(skip))
 
         context = layers.bi_lstm_network(sequence_batch, lstm_hidden_size_layer=ar_lstm_hidden_layer_dims, lstm_latent_dim=out_dim)
@@ -164,13 +152,11 @@ def CPC(latents, target_dim=64, emb_scale=0.1, scope='cpc'):
         # [num_predict, ar_context_dim]
         print('AR Context Shape: ' + str(context.get_shape().as_list()))
 
-        latent_loss = get_residual_loss(context, tf.slice(latents, [batch_size-1, 0], [1, -1]), type='l1')
-
         # One Hot Label
         onehot_labels = []
 
-        for i in range(batch_size - ar_lstm_sequence_length):
-            target_index = i + ar_lstm_sequence_length
+        for i in range(batch_size - ar_lstm_sequence_length - predict_skip):
+            target_index = i + ar_lstm_sequence_length + predict_skip
             onehot = np.zeros(batch_size)
             onehot[target_index] = 1
             print('Label: ' + str(onehot))
@@ -179,34 +165,35 @@ def CPC(latents, target_dim=64, emb_scale=0.1, scope='cpc'):
         onehot_labels = np.array(onehot_labels)
         onehot_labels = tf.constant(onehot_labels)
 
-        num_predicts = batch_size - ar_lstm_sequence_length
+        num_predicts = batch_size - ar_lstm_sequence_length - predict_skip
 
         def context_transform(input_layer, scope='context_transform'):
-            fc1 = layers.fc(input_layer, ar_context_dim//2, use_bias=True, non_linear_fn=util.swish, scope=scope + '_fc1')
+            fc1 = layers.fc(input_layer, ar_context_dim//2, use_bias=True, non_linear_fn=tf.nn.relu, scope=scope + '_fc1')
             fc2 = layers.fc(fc1, target_dim, use_bias=True, non_linear_fn=None, scope=scope + '_fc2')
 
             return fc2
 
         #scaled_context = tf.stack([layers.fc(context, target_dim, use_bias=True, non_linear_fn=tf.nn.sigmoid, scope='pred_' + str(i)) for i in range(num_predicts)])
-        scaled_context = tf.stack(
-            [context_transform(context, scope='pred_' + str(i)) for i in range(num_predicts)])
-        scaled_context = tf.squeeze(scaled_context)
+        scaled_context = context_transform(context, scope='pred')
+        #scaled_context = tf.squeeze(scaled_context)
 
         print('Predict Shape: ' + str(scaled_context.get_shape().as_list()))
 
         scaled_context = scaled_context * emb_scale
         targets = latents
         #targets = layers.fc(targets, target_dim, use_bias=True, non_linear_fn=tf.nn.sigmoid, scope='target')
-        targets = context_transform(targets, scope='target')
+        #targets = tf.slice(latents, [ar_lstm_sequence_length + predict_skip, 0], [num_predicts, -1])
+        #targets = context_transform(targets, scope='target')
+        targets = context_transform(targets, scope='targets')
         print('Target Shape: ' + str(targets.get_shape().as_list()))
 
-        scaled_context = tf.expand_dims(scaled_context, 0)
+        #scaled_context = tf.expand_dims(scaled_context, 0)
         logits = tf.matmul(scaled_context, targets, transpose_b=True)
         print('Logit Shape: ' + str(logits.get_shape().as_list()))
 
         entropy_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=onehot_labels, logits=logits))
 
-        return entropy_loss, logits, context, latent_loss
+        return entropy_loss, logits, context[-1]
 
 
 def decoder(latent, anchor_layer=None, activation='swish', scope='decoder_network', norm='layer', b_train=False):
@@ -298,11 +285,12 @@ def decoder(latent, anchor_layer=None, activation='swish', scope='decoder_networ
 
             block_depth = block_depth * 2
         '''
-        l = layers.self_attention(l, block_depth)
-
         for i in range(10):
-            l = layers.add_residual_block(l, filter_dims=[3, 3, block_depth], num_layers=2,
-                                      act_func=act_func, norm=norm, b_train=b_train, scope='block3_' + str(i))
+            #l = layers.add_residual_block(l, filter_dims=[3, 3, block_depth], num_layers=2,
+            #                          act_func=act_func, norm=norm, b_train=b_train, scope='block3_' + str(i))
+            l = layers.add_residual_dense_block(l, filter_dims=[3, 3, block_depth], num_layers=2,
+                                                act_func=act_func, norm=norm, b_train=b_train,
+                                                scope='dense_block_1_' + str(i))
 
         l = layers.conv(l, scope='tr1', filter_dims=[1, 1, num_channel], stride_dims=[1, 1], non_linear_fn=act_func)
 
@@ -336,7 +324,7 @@ def encoder(x, activation='relu', scope='encoder_network', norm='layer', b_train
 
         l = act_func(l)
 
-        for i in range(2):
+        for i in range(4):
             l = layers.add_residual_dense_block(l, filter_dims=[3, 3, block_depth], num_layers=2,
                                          act_func=act_func, norm=norm, b_train=b_train, scope='dense_block_1_' + str(i))
 
@@ -441,7 +429,7 @@ def global_encoder(x, activation='relu', scope='global_encoder_network', norm='l
         #l = layers.self_attention(l, block_depth)
 
         for i in range(3):
-            l = add_residual_dense_block(l, filter_dims=[3, 3, block_depth], num_layers=2,
+            l = layers.add_residual_dense_block(l, filter_dims=[3, 3, block_depth], num_layers=2,
                                          act_func=act_func, norm=norm, b_train=b_train, scope='dense_block_1_' + str(i))
 
         # l = layers.self_attention(l, block_depth)
@@ -455,7 +443,7 @@ def global_encoder(x, activation='relu', scope='global_encoder_network', norm='l
         print('Global Encoder Block 0: ' + str(l.get_shape().as_list()))
 
         for i in range(4):
-            l = add_residual_block(l,  filter_dims=[3, 3, block_depth], num_layers=4, act_func=act_func,
+            l = layers.add_residual_block(l,  filter_dims=[3, 3, block_depth], num_layers=4, act_func=act_func,
                                    norm=norm, b_train=b_train, scope='res_block_1_' + str(i), use_bottleneck=True)
 
         block_depth = block_depth * 2
@@ -468,7 +456,7 @@ def global_encoder(x, activation='relu', scope='global_encoder_network', norm='l
         print('Global Encoder Block 1: ' + str(l.get_shape().as_list()))
 
         for i in range(4):
-            l = add_residual_block(l, filter_dims=[3, 3, block_depth], num_layers=2, act_func=act_func,
+            l = layers.add_residual_block(l, filter_dims=[3, 3, block_depth], num_layers=2, act_func=act_func,
                                    norm=norm, b_train=b_train, scope='res_block_3_' + str(i), use_bottleneck=True)
 
         block_depth = block_depth * 2
@@ -481,7 +469,7 @@ def global_encoder(x, activation='relu', scope='global_encoder_network', norm='l
         print('Global Encoder Block 2: ' + str(l.get_shape().as_list()))
 
         for i in range(4):
-            l = add_residual_block(l, filter_dims=[3, 3, block_depth], num_layers=2, act_func=act_func,
+            l = layers.add_residual_block(l, filter_dims=[3, 3, block_depth], num_layers=2, act_func=act_func,
                                    norm=norm, b_train=b_train, scope='res_block_4_' + str(i), use_bottleneck=True)
 
         l = layers.add_dense_transition_layer(l, filter_dims=[1, 1, representation_dim], stride_dims=[2, 2],
@@ -492,7 +480,7 @@ def global_encoder(x, activation='relu', scope='global_encoder_network', norm='l
         print('Global Encoder Block 3: ' + str(l.get_shape().as_list()))
 
         for i in range(4):
-            l = add_residual_block(l, filter_dims=[3, 3, block_depth], num_layers=2, act_func=act_func,
+            l = layers.add_residual_block(l, filter_dims=[3, 3, block_depth], num_layers=2, act_func=act_func,
                                    norm=norm, b_train=b_train, scope='res_block_5_' + str(i), use_bottleneck=True)
 
         l = layers.add_dense_transition_layer(l, filter_dims=[1, 1, representation_dim], stride_dims=[1, 1],
@@ -740,7 +728,7 @@ def train(model_path):
 
     print('Final Encoder Dims: ' + str(latents.get_shape().as_list()))
 
-    cpc_e_loss, cpc_logits, cpc_context, latent_loss = CPC(latents, target_dim=cpc_target_dim, emb_scale=1.0, scope='cpc')
+    cpc_e_loss, cpc_logits, cpc_context = CPC(latents, target_dim=cpc_target_dim, emb_scale=1.0, scope='cpc')
 
     reconstructed_patch = decoder(cpc_context, anchor_layer=anchor_layer, activation='relu', norm='layer', b_train=b_train, scope='decoder')
 
@@ -753,7 +741,7 @@ def train(model_path):
     diff_loss = get_diff_loss(reconstructed_patch, Y, Z)
 
     alpha = 0.1
-    beta = 0.7
+    beta = 0.9
 
     total_loss = beta * r_loss * (alpha + diff_loss) + (1 - beta) * grad_loss
 
@@ -811,7 +799,6 @@ def train(model_path):
                 c_loss_list = []
                 index_list = []
                 diff_loss_list = []
-                latent_loss_list = []
 
                 for i in in_list:
                     # Check validity
@@ -821,7 +808,7 @@ def train(model_path):
                     if b_valid == 0:
                         continue
 
-                    _, residual_loss, cpc_loss, d_loss, l_loss = sess.run([optimizer, total_loss, cpc_e_loss, diff_loss, latent_loss],
+                    _, residual_loss, cpc_loss, d_loss = sess.run([optimizer, total_loss, cpc_e_loss, diff_loss],
                                                                   feed_dict={X: patch_batch[i],
                                                                              Y: patch_batch[i][-1],
                                                                              Z: patch_batch[i][-2 - predict_skip],
@@ -831,7 +818,6 @@ def train(model_path):
                     c_loss_list.append(cpc_loss)
                     index_list.append(i)
                     diff_loss_list.append(d_loss)
-                    latent_loss_list.append(l_loss)
 
                     if (start + 1) % 30 == 0:
                         r_patch = sess.run([reconstructed_patch],
@@ -854,8 +840,7 @@ def train(model_path):
                     print('       Worst #' + str(patch_index) + ': ' +
                           ' residual ' + str(loss_list[max_index]) +
                           ', diff ' + str(diff_loss_list[max_index]) +
-                          ', cpc ' + str(c_loss_list[max_index]) +
-                          ', latent ' + str(latent_loss_list[max_index]))
+                          ', cpc ' + str(c_loss_list[max_index]))
 
                     # Save hard set
                     hard_set_batch_index.append(start)
@@ -938,7 +923,7 @@ def test(model_path):
     config = tf.ConfigProto(allow_soft_placement=True)
     config.gpu_options.allow_growth = True
 
-    latents, anchor_layer = encoder(X, activation='swish', norm='layer', b_train=b_train, scope='encoder')
+    latents, anchor_layer = encoder(X, activation='relu', norm='layer', b_train=b_train, scope='encoder')
     # [Batch Size, Latent Dims]
     print('Encoder Dims: ' + str(latents.get_shape().as_list()))
 
@@ -951,7 +936,7 @@ def test(model_path):
 
     cpc_e_loss, cpc_logits, cpc_context, latent_loss = CPC(latents, target_dim=cpc_target_dim, emb_scale=1.0, scope='cpc')
 
-    reconstructed_patch = decoder(cpc_context, anchor_layer=anchor_layer, activation='swish', norm='layer',
+    reconstructed_patch = decoder(cpc_context, anchor_layer=anchor_layer, activation='relu', norm='layer',
                                   b_train=b_train, scope='decoder')
 
     reconstructed_patch = tf.squeeze(reconstructed_patch, axis=[0])
@@ -1091,19 +1076,19 @@ if __name__ == '__main__':
     batch_size = 8  # It should be larger than sequence length
 
     # CPC Encoding latent dimension
-    representation_dim = 2048
-    ar_lstm_sequence_length = batch_size - 1
-    ar_context_dim = 2048
+    representation_dim = 1024
+    ar_lstm_sequence_length = 4
+    ar_context_dim = 1024
     ar_lstm_hidden_layer_dims = ar_context_dim
-    cpc_target_dim = 32
+    cpc_target_dim = 64
 
     # Training parameter
     num_epoch = 100
 
-    predict_skip = 0
+    predict_skip = 2
 
     pixel_brightness_threshold = 200.0
-    patch_changeness_threshold = 20.0
+    patch_changeness_threshold = 25.0
     #patch_changeness_threshold = 40.0
     anomaly_score = 100.0
 

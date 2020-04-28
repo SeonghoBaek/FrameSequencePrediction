@@ -391,7 +391,7 @@ def encoder(x, activation='relu', scope='encoder_network', norm='layer', b_train
             l = layers.add_residual_block(l, filter_dims=[3, 3, block_depth], num_layers=2, act_func=act_func,
                                    norm=norm, b_train=b_train, scope='res_block_2_' + str(i))
 
-        anchor_layer = tf.slice(l, [l.get_shape().as_list()[0] - 1 - predict_skip - num_predicts, 0, 0, 0], [num_predicts, -1, -1, -1])
+        anchor_layer = tf.slice(l, [l.get_shape().as_list()[0] - 2 - predict_skip - num_predicts, 0, 0, 0], [num_predicts, -1, -1, -1])
         print('Anchor Layer: ' + str(anchor_layer.get_shape().as_list()))
 
         block_depth = block_depth * 2

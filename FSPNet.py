@@ -164,8 +164,8 @@ def auto_regressive(latents, sequence_length=4, skip=0, out_dim=256, scope='ar')
         #sequence_batch = tf.expand_dims(sequence_batch, 0)
         print('Sequence Batch Shape: ' + str(sequence_batch.get_shape().as_list()) + ', skip: ' + str(skip))
 
-        context = layers.bi_lstm_network(sequence_batch, lstm_hidden_size_layer=ar_lstm_hidden_layer_dims, lstm_latent_dim=out_dim)
-        #context = layers.lstm_network(sequence_batch, lstm_hidden_size_layer=ar_lstm_hidden_layer_dims, lstm_latent_dim=out_dim)
+        #context = layers.bi_lstm_network(sequence_batch, lstm_hidden_size_layer=ar_lstm_hidden_layer_dims, lstm_latent_dim=out_dim)
+        context = layers.lstm_network(sequence_batch, lstm_hidden_size_layer=ar_lstm_hidden_layer_dims, lstm_latent_dim=out_dim)
 
     return context
 
@@ -220,7 +220,7 @@ def CPC(latents, target_dim=64, emb_scale=0.1, scope='cpc'):
         return entropy_loss, logits, context
 
 
-def decoder(latent, anchor_layer=None, activation='swish', scope='decoder_network', norm='layer', b_train=False):
+def decoder(latent, anchor_layer_8=None, anchor_layer_32=None, activation='swish', scope='decoder_network', norm='layer', b_train=False):
     with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
         if activation == 'swish':
             act_func = util.swish
@@ -250,21 +250,21 @@ def decoder(latent, anchor_layer=None, activation='swish', scope='decoder_networ
 
         l = act_func(l)
 
-        for i in range(10):
+        for i in range(4):
             l = layers.add_residual_block(l, filter_dims=[3, 3, block_depth], num_layers=2,
                                    act_func=act_func, norm=norm, b_train=b_train, scope='block0_' + str(i))
 
         print('Decoder Block 0: ' + str(l.get_shape().as_list()))
 
-        if anchor_layer is not None:
-            block_depth = dense_block_depth * 8
+        if anchor_layer_8 is not None:
+            #block_depth = dense_block_depth * 8
             # 8 x 8
             l = layers.deconv(l, b_size=l.get_shape().as_list()[0], scope='deconv1', filter_dims=[3, 3, block_depth],
                               stride_dims=[2, 2], padding='SAME', non_linear_fn=act_func)
             print('Decoder Decov 1: ' + str(l.get_shape().as_list()))
-            print('Decoder Anchor: ' + str(anchor_layer.get_shape().as_list()))
+            print('Decoder Anchor: ' + str(anchor_layer_8.get_shape().as_list()))
             #anchor_layer = tf.stop_gradient(anchor_layer)
-            l = tf.concat([l, anchor_layer], axis=3)
+            l = tf.concat([l, anchor_layer_8], axis=3)
 
             block_depth = block_depth * 2
         else:
@@ -299,19 +299,26 @@ def decoder(latent, anchor_layer=None, activation='swish', scope='decoder_networ
 
         print('Deconvolution 3: ' + str(l.get_shape().as_list()))
 
-        '''
-        if anchor_layer is not None:
-
+        if anchor_layer_32 is not None:
             # 32 x 32
-            print('Decoder Anchor: ' + str(anchor_layer.get_shape().as_list()))
+            print('Decoder Anchor: ' + str(anchor_layer_32.get_shape().as_list()))
             #anchor_layer = tf.stop_gradient(anchor_layer)
-            l = tf.concat([l, anchor_layer], axis=3)
-
+            l = tf.concat([l, anchor_layer_32], axis=3)
             block_depth = block_depth * 2
-        '''
-        for i in range(10):
-            #l = layers.add_residual_block(l, filter_dims=[3, 3, block_depth], num_layers=2,
-            #                          act_func=act_func, norm=norm, b_train=b_train, scope='block3_' + str(i))
+
+        for i in range(5):
+            l = layers.add_residual_block(l, filter_dims=[3, 3, block_depth], num_layers=2,
+                                         act_func=act_func, norm=norm, b_train=b_train, scope='block3_' + str(i))
+
+        # 64 x 64
+        block_depth = dense_block_depth
+
+        l = layers.deconv(l, b_size=l.get_shape().as_list()[0], scope='deconv4', filter_dims=[3, 3, block_depth],
+                          stride_dims=[2, 2], padding='SAME', non_linear_fn=act_func)
+
+        print('Deconvolution 4: ' + str(l.get_shape().as_list()))
+
+        for i in range(5):
             l = layers.add_residual_dense_block(l, filter_dims=[3, 3, block_depth], num_layers=2,
                                                 act_func=act_func, norm=norm, b_train=b_train,
                                                 scope='dense_block_1_' + str(i))
@@ -354,10 +361,9 @@ def encoder(x, activation='relu', scope='encoder_network', norm='layer', b_train
 
         #l = layers.self_attention(l, block_depth)
 
-        #anchor_layer = tf.slice(l, [l.get_shape().as_list()[0] - predict_skip - 2, 0, 0, 0], [1, -1, -1, -1])
         block_depth = block_depth * 2
 
-        # [16 x 16]
+        # [32 x 32]
         l = layers.conv(l, scope='tr1', filter_dims=[3, 3, block_depth], stride_dims=[2, 2], non_linear_fn=None)
 
         if norm == 'layer':
@@ -367,6 +373,9 @@ def encoder(x, activation='relu', scope='encoder_network', norm='layer', b_train
 
         l = act_func(l)
 
+        anchor_layer_32 = tf.slice(l, [l.get_shape().as_list()[0] - 1 - num_predicts, 0, 0, 0],
+                                   [num_predicts, -1, -1, -1])
+
         print('Encoder Block 0: ' + str(l.get_shape().as_list()))
 
         for i in range(2):
@@ -375,7 +384,7 @@ def encoder(x, activation='relu', scope='encoder_network', norm='layer', b_train
 
         block_depth = block_depth * 2
 
-        # [8 x 8]
+        # [16 x 16]
         l = layers.conv(l, scope='tr2', filter_dims=[3, 3, block_depth], stride_dims=[2, 2], non_linear_fn=None)
 
         if norm == 'layer':
@@ -387,16 +396,13 @@ def encoder(x, activation='relu', scope='encoder_network', norm='layer', b_train
 
         print('Encoder Block 1: ' + str(l.get_shape().as_list()))
 
-        for i in range(10):
+        for i in range(2):
             l = layers.add_residual_block(l, filter_dims=[3, 3, block_depth], num_layers=2, act_func=act_func,
-                                   norm=norm, b_train=b_train, scope='res_block_2_' + str(i))
-
-        anchor_layer = tf.slice(l, [l.get_shape().as_list()[0] - 2 - predict_skip - num_predicts, 0, 0, 0], [num_predicts, -1, -1, -1])
-        print('Anchor Layer: ' + str(anchor_layer.get_shape().as_list()))
+                                          norm=norm, b_train=b_train, use_dilation=True, scope='res_block_2_' + str(i))
 
         block_depth = block_depth * 2
 
-        # [4 x 4]
+        # [8 x 8]
         l = layers.conv(l, scope='tr3', filter_dims=[3, 3, block_depth], stride_dims=[2, 2], non_linear_fn=None)
         print('Encoder Block 2: ' + str(l.get_shape().as_list()))
 
@@ -407,11 +413,16 @@ def encoder(x, activation='relu', scope='encoder_network', norm='layer', b_train
 
         l = act_func(l)
 
+        anchor_layer_8 = tf.slice(l, [l.get_shape().as_list()[0] - 1 - num_predicts, 0, 0, 0],
+                                  [num_predicts, -1, -1, -1])
+
         for i in range(2):
             l = layers.add_residual_block(l, filter_dims=[3, 3, block_depth], num_layers=2, act_func=act_func,
-                                   norm=norm, b_train=b_train, scope='res_block_3_' + str(i))
+                                          norm=norm, b_train=b_train, use_dilation=True, scope='res_block_3_' + str(i))
 
-        l = layers.conv(l, scope='tr4', filter_dims=[1, 1, representation_dim], stride_dims=[1, 1], non_linear_fn=None)
+        # [4 x 4]
+        l = layers.conv(l, scope='tr4', filter_dims=[3, 3, representation_dim], stride_dims=[2, 2], non_linear_fn=None)
+        print('Encoder Block 3: ' + str(l.get_shape().as_list()))
 
         if norm == 'layer':
             l = layers.layer_norm(l, scope='ln4')
@@ -422,17 +433,17 @@ def encoder(x, activation='relu', scope='encoder_network', norm='layer', b_train
 
         for i in range(2):
             l = layers.add_residual_block(l, filter_dims=[3, 3, representation_dim], num_layers=2, act_func=act_func,
-                                   norm=norm, b_train=b_train, scope='res_block_4_' + str(i))
+                                          norm=norm, b_train=b_train, use_dilation=True, scope='res_block_4_' + str(i))
 
         last_layer = l
 
         context = layers.global_avg_pool(last_layer, output_length=representation_dim, use_bias=True, scope='gp')
         print('Encoder GP Dims: ' + str(context.get_shape().as_list()))
 
-    return context, anchor_layer
+    return context, anchor_layer_8, anchor_layer_32
 
 
-def discriminator(x, activation='relu', scope='discriminator_network', norm='layer', b_train=False):
+def discriminator(x, condition, activation='relu', scope='discriminator_network', norm='layer', b_train=False):
     with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
         if activation == 'swish':
             act_func = util.swish
@@ -445,6 +456,10 @@ def discriminator(x, activation='relu', scope='discriminator_network', norm='lay
 
         print('Discriminator Input: ' + str(x.get_shape().as_list()))
         block_depth = dense_block_depth * 2
+
+        in_h = x.get_shape().as_list()[1]
+        in_w = x.get_shape().as_list()[2]
+        condition_length = condition.get_shape().as_list()[-1]
 
         l = x
         l = layers.conv(l, scope='conv1', filter_dims=[7, 7, block_depth], stride_dims=[1, 1],
@@ -465,7 +480,7 @@ def discriminator(x, activation='relu', scope='discriminator_network', norm='lay
 
         block_depth = block_depth * 2
 
-        # [16 x 16]
+        # [32 x 32]
         l = layers.conv(l, scope='tr1', filter_dims=[3, 3, block_depth], stride_dims=[2, 2], non_linear_fn=None)
 
         if norm == 'layer':
@@ -475,15 +490,18 @@ def discriminator(x, activation='relu', scope='discriminator_network', norm='lay
 
         l = act_func(l)
 
+        conditional_variable = tf.reshape(condition, shape=[-1, 32, 32, 1])
+        l = tf.concat([l, conditional_variable], axis=3)
+
         print('Discriminator Block 0: ' + str(l.get_shape().as_list()))
 
         for i in range(2):
             l = layers.add_residual_block(l,  filter_dims=[3, 3, block_depth], num_layers=2, act_func=act_func,
-                                   norm=norm, b_train=b_train, scope='res_block_1_' + str(i))
+                                   norm=norm, b_train=b_train, use_dilation=True, scope='res_block_1_' + str(i))
 
         block_depth = block_depth * 2
 
-        # [8 x 8]
+        # [16 x 16]
         l = layers.conv(l, scope='tr2', filter_dims=[3, 3, block_depth], stride_dims=[2, 2], non_linear_fn=None)
 
         if norm == 'layer':
@@ -497,11 +515,11 @@ def discriminator(x, activation='relu', scope='discriminator_network', norm='lay
 
         for i in range(2):
             l = layers.add_residual_block(l, filter_dims=[3, 3, block_depth], num_layers=2, act_func=act_func,
-                                   norm=norm, b_train=b_train, scope='res_block_2_' + str(i))
+                                   norm=norm, b_train=b_train, use_dilation=True, scope='res_block_2_' + str(i))
 
         block_depth = block_depth * 2
 
-        # [4 x 4]
+        # [8 x 8]
         l = layers.conv(l, scope='tr3', filter_dims=[3, 3, block_depth], stride_dims=[2, 2], non_linear_fn=None)
         print('Discriminator Block 2: ' + str(l.get_shape().as_list()))
 
@@ -514,9 +532,10 @@ def discriminator(x, activation='relu', scope='discriminator_network', norm='lay
 
         for i in range(2):
             l = layers.add_residual_block(l, filter_dims=[3, 3, block_depth], num_layers=2, act_func=act_func,
-                                   norm=norm, b_train=b_train, scope='res_block_3_' + str(i))
+                                   norm=norm, b_train=b_train, use_dilation=True, scope='res_block_3_' + str(i))
 
-        l = layers.conv(l, scope='tr4', filter_dims=[1, 1, representation_dim], stride_dims=[1, 1], non_linear_fn=None)
+        # [4 x 4]
+        l = layers.conv(l, scope='tr4', filter_dims=[3, 3, representation_dim], stride_dims=[2, 2], non_linear_fn=None)
 
         if norm == 'layer':
             l = layers.layer_norm(l, scope='ln4')
@@ -527,7 +546,7 @@ def discriminator(x, activation='relu', scope='discriminator_network', norm='lay
 
         for i in range(2):
             l = layers.add_residual_block(l, filter_dims=[3, 3, representation_dim], num_layers=2, act_func=act_func,
-                                   norm=norm, b_train=b_train, scope='res_block_4_' + str(i))
+                                   norm=norm, b_train=b_train, use_dilation=True, scope='res_block_4_' + str(i))
 
         last_layer = l
 
@@ -593,6 +612,7 @@ def prepare_patches(image, patch_size=[24, 24], patch_dim=[7, 7], stride=12, add
             patch = image[h*stride:(h*stride + patch_h), w*stride:(w*stride + patch_w)].copy()
             if add_noise is True:
                 patch = util.add_gaussian_pixel_noise(patch, mean=0.0, var=25.0)
+                patch = util.augment_image(patch)
                 #patch = np.array([[patch[y, x] if patch[y, x] < pixel_brightness_threshold else pixel_brightness_threshold for x in range(patch_w)] for y in range(patch_h)])
             patches.append(patch)
 
@@ -762,7 +782,7 @@ def train(model_path):
     config = tf.ConfigProto(allow_soft_placement=True)
     config.gpu_options.allow_growth = True
 
-    latents, anchor_layer = encoder(X, activation='relu', norm='layer', b_train=b_train, scope='encoder')
+    latents, anchor_layer_8, anchor_layer_32 = encoder(X, activation='relu', norm='layer', b_train=b_train, scope='encoder')
     # [Batch Size, Latent Dims]
     print('Encoder Dims: ' + str(latents.get_shape().as_list()))
 
@@ -775,14 +795,15 @@ def train(model_path):
 
     cpc_e_loss, cpc_logits, cpc_context = CPC(latents, target_dim=cpc_target_dim, emb_scale=1.0, scope='cpc')
 
-    reconstructed_patch = decoder(cpc_context, anchor_layer=anchor_layer, activation='relu', norm='layer', b_train=b_train, scope='decoder')
+    reconstructed_patch = decoder(cpc_context, anchor_layer_8=anchor_layer_8, anchor_layer_32=None,
+                                  activation='relu', norm='layer', b_train=b_train, scope='decoder')
 
     # Adversarial Discriminator
-    latent_fake, logit_fake = discriminator(reconstructed_patch, activation='relu', norm='layer', b_train=b_train, scope='discriminator')
-    latent_real, logit_real = discriminator(Y, activation='relu', norm='layer', b_train=b_train, scope='discriminator')
+    latent_fake, logit_fake = discriminator(reconstructed_patch, cpc_context, activation='relu', norm='layer', b_train=b_train, scope='discriminator')
+    latent_real, logit_real = discriminator(Y, cpc_context, activation='relu', norm='layer', b_train=b_train, scope='discriminator')
 
     print('Reconstructed Patch Dims: ' + str(reconstructed_patch.get_shape().as_list()))
-
+    confidence_fake = tf.nn.sigmoid(logit_fake)
     r_loss = get_residual_loss(reconstructed_patch, Y, type='l1')
     grad_loss = get_gradient_loss(reconstructed_patch, Y)
     diff_loss = get_diff_loss(reconstructed_patch, Y, Z)
@@ -796,7 +817,7 @@ def train(model_path):
 
     alpha = 0.1
     beta = 0.9
-    scale = 10
+    scale = 1.0
 
     total_loss = beta * r_loss * (alpha + diff_loss) + (1 - beta) * grad_loss
 
@@ -865,7 +886,7 @@ def train(model_path):
                     if b_valid == 0:
                         continue
 
-                    _, residual_loss, cpc_loss, d_loss = sess.run([optimizer, total_loss, cpc_e_loss, diff_loss],
+                    _, residual_loss, cpc_loss, d_loss, confidence = sess.run([optimizer, total_loss, cpc_e_loss, diff_loss, confidence_fake],
                                                                   feed_dict={X: patch_batch[i],
                                                                              Y: patch_batch[i][-num_predicts:],
                                                                              Z: patch_batch[i][-2 - predict_skip - num_predicts + 1: -2 - predict_skip + 1],
@@ -879,12 +900,16 @@ def train(model_path):
                                                                   feed_dict={X: patch_batch[i],
                                                                              Y: patch_batch[i][-num_predicts:],
                                                                              b_train: True})
-                    disc_loss_list.append(discriminator_loss)
+                    disc_loss_list.append(confidence[-1][0])
 
-                    if (start + 1) % 30 == 0:
+                    if (start + 1) % 10 == 0:
                         r_patch = sess.run([reconstructed_patch],
                                            feed_dict={X: patch_batch[i], Y: patch_batch[i][-num_predicts:], b_train: True})
-                        cv2.imwrite('imgs/' + str(start + batch_size) + '_patch_' + str(i) + '_anchor.jpg',
+                        cv2.imwrite('imgs/' + str(start + batch_size) + '_patch_' + str(i) + '_anchor_t2.jpg',
+                                    patch_batch[i][-2 - predict_skip - 2])
+                        cv2.imwrite('imgs/' + str(start + batch_size) + '_patch_' + str(i) + '_anchor_t1.jpg',
+                                    patch_batch[i][-2 - predict_skip - 1])
+                        cv2.imwrite('imgs/' + str(start + batch_size) + '_patch_' + str(i) + '_anchor_t0.jpg',
                                     patch_batch[i][-2 - predict_skip])
                         cv2.imwrite('imgs/' + str(start + batch_size) + '_patch_' + str(i) + '_pred.jpg',
                                     r_patch[0][num_predicts-1])
@@ -923,14 +948,13 @@ def train(model_path):
                         print('Save failed')
 
             # Get top n max
-            '''
             indexed_hard_set_loss_list = list(enumerate(hard_set_loss_list))
             top_n = len(hard_set_loss_list) // 30
             top_n = sorted(indexed_hard_set_loss_list, key=operator.itemgetter(1))[-top_n:]
             top_n = list(reversed([i for i, v in top_n]))
             hard_set_batch_index = np.array(hard_set_batch_index)
             hard_set_batch_index = list(hard_set_batch_index[top_n])
-            num_training = 30
+            num_training = 5
 
             for num_hard_training in range(num_training):
                 for start in hard_set_batch_index:
@@ -955,11 +979,17 @@ def train(model_path):
                         if b_valid == 0:
                             continue
 
-                        _, residual_loss, gradient_loss, cpc_loss = sess.run([optimizer, r_loss, grad_loss, cpc_e_loss],
-                                                                             feed_dict={X: patch_batch[i],
-                                                                                        Y: patch_batch[i][-1],
-                                                                                        Z: patch_batch[i][-2 - predict_skip],
-                                                                                        b_train: True})
+                        _, residual_loss = sess.run([optimizer, r_loss],
+                                                     feed_dict={X: patch_batch[i],
+                                                     Y: patch_batch[i][-num_predicts:],
+                                                     Z: patch_batch[i][-2 - predict_skip - num_predicts + 1: -2 - predict_skip + 1],
+                                                     b_train: True})
+
+                        _, discriminator_loss = sess.run([disc_optimizer, disc_loss_fake],
+                                                         feed_dict={X: patch_batch[i],
+                                                                    Y: patch_batch[i][-num_predicts:],
+                                                                    b_train: True})
+
                         print('Hard set train(' + str(num_hard_training + 1) + '/' + str(num_training) +
                               '). residual_loss: ' + str(residual_loss))
                 try:
@@ -968,14 +998,10 @@ def train(model_path):
                     print('Saved.')
                 except:
                     print('Save failed')
-                '''
 
 
 def test(model_path):
     print('Please wait. It takes several minutes. Do not quit!')
-
-    num_predicts = 1
-    batch_size = ar_lstm_sequence_length + 1 + predict_skip
 
     with tf.device('/device:CPU:0'):
         X = tf.placeholder(tf.float32, [batch_size, patch_height, patch_width, num_channel])
@@ -988,31 +1014,52 @@ def test(model_path):
     config = tf.ConfigProto(allow_soft_placement=True)
     config.gpu_options.allow_growth = True
 
-    latents, anchor_layer = encoder(X, activation='relu', norm='layer', b_train=b_train, scope='encoder')
+    latents, anchor_layer_8, anchor_layer_32 = encoder(X, activation='relu', norm='layer', b_train=b_train, scope='encoder')
+    # [Batch Size, Latent Dims]
+    print('Encoder Dims: ' + str(latents.get_shape().as_list()))
+
+    #latents_global = global_encoder(Z, activation='swish', norm='layer', b_train=b_train, scope='g_encoder')
+    #print('Global Encoder Dims: ' + str(latents_global.get_shape().as_list()))
+
+    #latents = tf.concat([latents, latents_global], axis=-1)
 
     print('Final Encoder Dims: ' + str(latents.get_shape().as_list()))
 
     cpc_e_loss, cpc_logits, cpc_context = CPC(latents, target_dim=cpc_target_dim, emb_scale=1.0, scope='cpc')
 
-    reconstructed_patch = decoder(cpc_context, anchor_layer=anchor_layer, activation='relu', norm='layer', b_train=b_train, scope='decoder')
+    reconstructed_patch = decoder(cpc_context, anchor_layer_8=anchor_layer_8, anchor_layer_32=anchor_layer_32,
+                                  activation='relu', norm='layer', b_train=b_train, scope='decoder')
 
     # Adversarial Discriminator
-    latent_fake, logit_fake = discriminator(reconstructed_patch, activation='relu', norm='layer', b_train=b_train, scope='discriminator')
-    latent_real, logit_real = discriminator(Y, activation='relu', norm='layer', b_train=b_train, scope='discriminator')
+    latent_fake, logit_fake = discriminator(reconstructed_patch, cpc_context, activation='relu', norm='layer', b_train=b_train, scope='discriminator')
+    latent_real, logit_real = discriminator(Y, cpc_context, activation='relu', norm='layer', b_train=b_train, scope='discriminator')
 
     print('Reconstructed Patch Dims: ' + str(reconstructed_patch.get_shape().as_list()))
-
+    confidence_fake = tf.nn.sigmoid(logit_fake)
     r_loss = get_residual_loss(reconstructed_patch, Y, type='l1')
     grad_loss = get_gradient_loss(reconstructed_patch, Y)
     diff_loss = get_diff_loss(reconstructed_patch, Y, Z)
     latent_loss = get_residual_loss(latent_real, latent_fake, type='l2')
     disc_loss, disc_loss_real, disc_loss_fake = get_discriminator_loss(logit_real, logit_fake, type='ce')
 
+    fake_prob = tf.nn.sigmoid(logit_fake)
+    real_prob = tf.nn.sigmoid(logit_real)
+
+    disc_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='discriminator')
+    encoder_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='encoder')
+    cpc_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='cpc')
+    decoder_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='decoder')
+
     alpha = 0.1
     beta = 0.9
-    scale = 10
+    scale = 30.0
 
     total_loss = beta * r_loss * (alpha + diff_loss) + (1 - beta) * grad_loss
+
+    optimizer = tf.train.AdamOptimizer(learning_rate=1e-4, beta1=0.5).minimize(cpc_e_loss + total_loss + scale * latent_loss,
+                                                                               var_list=[encoder_vars + cpc_vars + decoder_vars])
+    #optimizer = tf.train.AdamOptimizer(learning_rate=1e-4, beta1=0.5).minimize(total_loss + cpc_e_loss)
+    disc_optimizer = tf.train.AdamOptimizer(learning_rate=1e-4, beta1=0.5).minimize(disc_loss, var_list=disc_vars)
 
     # Launch the graph in a session
     with tf.Session(config=config) as sess:
@@ -1048,7 +1095,7 @@ def test(model_path):
             for i in range(set_size):
                 patches = prepare_patches(img_batches[i], patch_size=[patch_height, patch_width],
                                           patch_dim=[num_context_patches_height, num_context_patches_width],
-                                          stride=patch_height // 2, add_noise=True)
+                                          stride=patch_height // 2, add_noise=False)
                 prev_patch_batch.append(patches)
 
             patch_batch = np.array(prev_patch_batch)
@@ -1058,6 +1105,8 @@ def test(model_path):
             entropy_loss_list = []
             residual_loss_list = []
             diff_loss_list = []
+            p_fake_list = []
+            p_real_list = []
             index_list = []
             score_list = []
 
@@ -1069,13 +1118,13 @@ def test(model_path):
                 if b_valid == 0:
                     continue
 
-                l1, l2, l3, l4 = sess.run([cpc_e_loss, r_loss, diff_loss, disc_loss_fake],
+                l1, l2, p_fake, p_real = sess.run([cpc_e_loss, r_loss, fake_prob, real_prob],
                                       feed_dict={X: patch_batch[i],
-                                                 Y: patch_batch[i][-1],
-                                                 Z: patch_batch[i][-2 - predict_skip],
+                                                 Y: patch_batch[i][-num_predicts:],
+                                                 Z: patch_batch[i][-2 - predict_skip - num_predicts + 1: -2 - predict_skip + 1],
                                                  b_train: False})
 
-                r_patch = sess.run([reconstructed_patch], feed_dict={X: patch_batch[i], Y: patch_batch[i][-1], b_train: False})
+                r_patch = sess.run([reconstructed_patch], feed_dict={X: patch_batch[i], Y: [patch_batch[i][-1]], b_train: False})
                 cv2.imwrite(str(start+batch_size) + '_patch_' + str(i) + '.jpg', patch_batch[i][-1])
                 cv2.imwrite(str(start+batch_size) + '_r_patch_' + str(i) + '.jpg', r_patch[0][-1])
 
@@ -1083,7 +1132,9 @@ def test(model_path):
                 score_list.append(score)
                 entropy_loss_list.append(l1)
                 residual_loss_list.append(l2)
-                diff_loss_list.append(l3)
+                #diff_loss_list.append(l4)
+                p_fake_list.append(p_fake[0][0])
+                p_real_list.append(p_real[0][0])
                 index_list.append(i)
 
             for s in range(len(score_list)):
@@ -1092,7 +1143,8 @@ def test(model_path):
                           ', score: ' + str(score_list[s]) +
                           ', entropy loss: ' + str(entropy_loss_list[s]) +
                           ', residual loss: ' + str(residual_loss_list[s]) +
-                          ', diff loss: ' + str(diff_loss_list[s]))
+                          ', p_fake: ' + str(p_fake_list[s]) +
+                          ', p_real: ' + str(p_real_list[s]))
 
             sequence_num += 1
 
@@ -1118,13 +1170,13 @@ if __name__ == '__main__':
     cold_data = args.cold_data
 
     # Input Data Dimension
-    input_height = 256
-    input_width = 480
+    input_height = 64  # 256
+    input_width = 128  # 480
     num_channel = 1
-    patch_width = 32
-    patch_height = 32
-    num_context_patches_width = 29
-    num_context_patches_height = 15
+    patch_width = 64
+    patch_height = 64
+    num_context_patches_width = 3  # 29
+    num_context_patches_height = 1  # 15
 
     # Dense Conv Block Base Channel Depth
     dense_block_depth = 64
@@ -1149,8 +1201,7 @@ if __name__ == '__main__':
     num_predicts = batch_size - ar_lstm_sequence_length - predict_skip
 
     pixel_brightness_threshold = 128.0
-    patch_changeness_threshold = 25.0
-    #patch_changeness_threshold = 40.0
+    patch_changeness_threshold = 10.0
     anomaly_score = 100.0
 
     # (x=960, y=160)
@@ -1161,6 +1212,7 @@ if __name__ == '__main__':
     crop_global_area = [160, 600, 960, 1600]
 
     # Input Case 2
+    '''
     in_list = list(range(38, 41))
     in_list += list(range(45, 48))
     in_list += [49, 79, 93, 121, 138, 149, 168, 178, 197, 206, 227, 234, 257, 263, 286, 291, 316, 320, 348]
@@ -1188,6 +1240,8 @@ if __name__ == '__main__':
     in_list += list(range(366, 370))
     in_list += list(range(395, 398))
     in_list += list(range(374, 376))
+    '''
+    in_list = list(range(0, 3))
 
     # Input Case 3
     # in_list = list(range(101, 110))
@@ -1218,4 +1272,6 @@ if __name__ == '__main__':
         fine_tune(base_model_path, task_model_path)
     elif mode == 'test':
         num_epoch = 1
+        num_predicts = 1
+        batch_size = ar_lstm_sequence_length + 1 + predict_skip
         test(model_path)

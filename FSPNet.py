@@ -208,7 +208,7 @@ def CPC(latents, target_dim=64, emb_scale=0.1, scope='cpc'):
         #targets = layers.fc(targets, target_dim, use_bias=True, non_linear_fn=tf.nn.sigmoid, scope='target')
         #targets = tf.slice(latents, [ar_lstm_sequence_length + predict_skip, 0], [num_predicts, -1])
         #targets = context_transform(targets, scope='target')
-        targets = context_transform(targets, scope='targets')
+        targets = context_transform(targets, scope='pred')
         print('Target Shape: ' + str(targets.get_shape().as_list()))
 
         #scaled_context = tf.expand_dims(scaled_context, 0)
@@ -562,7 +562,7 @@ def check_patch_changeness(patch_list, patch_index, validity=0, threshold=0.0, t
     num_patches = len(patch_list)
 
     #safe_region = 1 + num_patches // 2  # 50 % front area
-    safe_region = num_patches - 2 - predict_skip  # Index start from 0
+    safe_region = num_patches - 2 - predict_skip - num_predicts  # Index start from 0
 
     # Test time only
     if train_mode is False:
@@ -577,14 +577,16 @@ def check_patch_changeness(patch_list, patch_index, validity=0, threshold=0.0, t
 
     # Fast traverse
     if validity == 1:
-        for i in range(safe_region, -1, -1):
+        for i in range(safe_region, num_predicts-1, -1):
             current_patch = patch_list[i]
             next_patch = patch_pixel_mean[patch_index]
             changeness = np.abs(current_patch - next_patch)
             m = np.mean(np.array(changeness), axis=(0, 1))
 
+            #print('Frame ' + str(i) + ' Patch ' + str(patch_index) + ' Changeness: ' + str(m))
+
             if m > threshold:
-                # print('Frame ' + str(i) + ' Patch ' + str(patch_index) + ' Changeness: ' + str(m))
+                #print('Frame ' + str(i) + ' Patch ' + str(patch_index) + ' Changeness: ' + str(m))
                 return 1
     else:
         current_patch = patch_list[safe_region]
@@ -592,8 +594,10 @@ def check_patch_changeness(patch_list, patch_index, validity=0, threshold=0.0, t
         changeness = np.abs(current_patch - next_patch)
         m = np.mean(np.array(changeness), axis=(0, 1))
 
+        #print('Frame ' + str(safe_region) + ' Patch ' + str(patch_index) + ' Changeness: ' + str(m))
+
         if m > threshold:
-            # print('Frame ' + str(safe_region) + ' Patch ' + str(patch_index) + ' Changeness: ' + str(m))
+            #print('Frame ' + str(safe_region) + ' Patch ' + str(patch_index) + ' Changeness: ' + str(m))
             return 1
 
     return 0
@@ -865,7 +869,7 @@ def train(model_path):
                 for i in range(set_size):
                     patches = prepare_patches(img_batches[i], patch_size=[patch_height, patch_width],
                                               patch_dim=[num_context_patches_height, num_context_patches_width],
-                                              stride=patch_height//2)
+                                              stride=patch_height//2, add_noise=False)
                     prev_patch_batch.append(patches)
 
                 patch_batch = np.array(prev_patch_batch)
@@ -905,16 +909,26 @@ def train(model_path):
                     if (start + 1) % 10 == 0:
                         r_patch = sess.run([reconstructed_patch],
                                            feed_dict={X: patch_batch[i], Y: patch_batch[i][-num_predicts:], b_train: True})
-                        cv2.imwrite('imgs/' + str(start + batch_size) + '_patch_' + str(i) + '_anchor_t2.jpg',
-                                    patch_batch[i][-2 - predict_skip - 2])
-                        cv2.imwrite('imgs/' + str(start + batch_size) + '_patch_' + str(i) + '_anchor_t1.jpg',
-                                    patch_batch[i][-2 - predict_skip - 1])
-                        cv2.imwrite('imgs/' + str(start + batch_size) + '_patch_' + str(i) + '_anchor_t0.jpg',
+                        cv2.imwrite('imgs/' + str(start + batch_size) + '_patch_' + str(i) + '_anchor_t7.jpg',
                                     patch_batch[i][-2 - predict_skip])
-                        cv2.imwrite('imgs/' + str(start + batch_size) + '_patch_' + str(i) + '_pred.jpg',
-                                    r_patch[0][num_predicts-1])
+                        cv2.imwrite('imgs/' + str(start + batch_size) + '_patch_' + str(i) + '_anchor_t6.jpg',
+                                    patch_batch[i][-2 - predict_skip - 1])
+                        cv2.imwrite('imgs/' + str(start + batch_size) + '_patch_' + str(i) + '_anchor_t5.jpg',
+                                    patch_batch[i][-2 - predict_skip - 2])
+                        cv2.imwrite('imgs/' + str(start + batch_size) + '_patch_' + str(i) + '_anchor_t4.jpg',
+                                    patch_batch[i][-2 - predict_skip - 3])
+                        cv2.imwrite('imgs/' + str(start + batch_size) + '_patch_' + str(i) + '_anchor_t3.jpg',
+                                    patch_batch[i][-2 - predict_skip - 4])
+                        cv2.imwrite('imgs/' + str(start + batch_size) + '_patch_' + str(i) + '_anchor_t2.jpg',
+                                    patch_batch[i][-2 - predict_skip - 5])
+                        cv2.imwrite('imgs/' + str(start + batch_size) + '_patch_' + str(i) + '_anchor_t1.jpg',
+                                    patch_batch[i][-2 - predict_skip - 6])
+                        cv2.imwrite('imgs/' + str(start + batch_size) + '_patch_' + str(i) + '_anchor_t0.jpg',
+                                    patch_batch[i][-2 - predict_skip - 7])
                         cv2.imwrite('imgs/' + str(start + batch_size) + '_patch_' + str(i) + '_target.jpg',
                                     patch_batch[i][-1])
+                        cv2.imwrite('imgs/' + str(start + batch_size) + '_patch_' + str(i) + '_pred.jpg',
+                                    r_patch[0][num_predicts - 1])
 
                 if len(loss_list) > 0:
                     max_index = loss_list.index(max(loss_list))
@@ -1201,7 +1215,7 @@ if __name__ == '__main__':
     num_predicts = batch_size - ar_lstm_sequence_length - predict_skip
 
     pixel_brightness_threshold = 128.0
-    patch_changeness_threshold = 10.0
+    patch_changeness_threshold = 3.0
     anomaly_score = 100.0
 
     # (x=960, y=160)

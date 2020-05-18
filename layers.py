@@ -13,11 +13,23 @@ def lstm_network(input, lstm_hidden_size_layer=64,
 
         # initial_state = lstm_cells.zero_state(batch_size,  tf.float32)
 
-        _, states = tf.nn.dynamic_rnn(lstm_cells, input, dtype=tf.float32, initial_state=None)
+        outputs, states = tf.nn.dynamic_rnn(lstm_cells, input, dtype=tf.float32, initial_state=None)
         # print(z_sequence_output.get_shape())
 
-        states_concat = tf.concat([states[0].h, states[1].h], 1)
-        z_sequence_output = fc(states_concat, lstm_latent_dim, scope='linear_transform')
+        outputs = tf.transpose(outputs, [1, 0, 2])
+        outputs = outputs[-1]
+        print('LSTM output shape: ' + str(outputs.get_shape().as_list()))
+
+        #outputs = tf.slice(outputs, [0, outputs.get_shape().as_list()[1]-1, 0], [-1, 1, -1])
+        #outputs = tf.squeeze(outputs)
+        #print('LSTM output shape: ' + str(outputs.get_shape().as_list()))
+
+        z_sequence_output = outputs
+
+        #states_concat = tf.concat([states[0].h, states[1].h], 1)
+        #z_sequence_output = fc(states_concat, lstm_latent_dim, scope='linear_transform')
+        # print('LSTM state shape: ' + str(states))
+
         #z_sequence_output = states[1].h
 
     return z_sequence_output
@@ -33,13 +45,19 @@ def bi_lstm_network(input, forget_bias=1.0, lstm_hidden_size_layer=64, lstm_late
         fw_cell = tf.nn.rnn_cell.MultiRNNCell([make_cell() for _ in range(lstm_num_layers)])
         bw_cell = tf.nn.rnn_cell.MultiRNNCell([make_cell() for _ in range(lstm_num_layers)])
 
-        _, states = tf.nn.bidirectional_dynamic_rnn(fw_cell, bw_cell, input, dtype=tf.float32)
+        outputs, states = tf.nn.bidirectional_dynamic_rnn(fw_cell, bw_cell, input, dtype=tf.float32)
 
-        states_fw, states_bw = states
-        state_concat = tf.concat([states_fw[1].h, states_bw[1].h], 1)
+        fw_output = tf.transpose(outputs[0], [1, 0, 2])
+        bw_output = tf.transpose(outputs[1], [1, 0, 2])
+        outputs = tf.concat([fw_output[-1], bw_output[-1]], -1)
+        print('LSTM output shape: ' + str(outputs.get_shape().as_list()))
+        z_sequence_output = fc(outputs, lstm_latent_dim, use_bias=True, scope='linear_transform')
+
+        #states_fw, states_bw = states
+        #state_concat = tf.concat([states_fw[1].h, states_bw[1].h], 1)
 
         # Linear Transform
-        z_sequence_output = fc(state_concat, lstm_latent_dim, use_bias=True, scope='linear_transform')
+        #z_sequence_output = fc(state_concat, lstm_latent_dim, use_bias=True, scope='linear_transform')
         #z_sequence_output = states_fw[1].h
 
     return z_sequence_output

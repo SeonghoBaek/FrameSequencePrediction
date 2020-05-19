@@ -413,7 +413,10 @@ def encoder(x, activation='relu', scope='encoder_network', norm='layer', b_train
 
         l = act_func(l)
 
-        anchor_layer_8 = tf.slice(l, [l.get_shape().as_list()[0] - 1 - num_predicts, 0, 0, 0],
+        #anchor_layer_8 = tf.slice(l, [l.get_shape().as_list()[0] - 1 - num_predicts - predict_skip, 0, 0, 0],
+        #                          [num_predicts, -1, -1, -1])
+        # Sequence Start Frames
+        anchor_layer_8 = tf.slice(l, [0, 0, 0, 0],
                                   [num_predicts, -1, -1, -1])
 
         for i in range(2):
@@ -868,14 +871,15 @@ def test(model_path):
     config = tf.ConfigProto(allow_soft_placement=True)
     config.gpu_options.allow_growth = True
 
-    latents, anchor_layer_8, anchor_layer_32 = encoder(X, activation='relu', norm='layer', b_train=b_train, scope='encoder')
+    latents, anchor_layer_8, anchor_layer_32 = encoder(X, activation='relu', norm='layer', b_train=b_train,
+                                                       scope='encoder')
     # [Batch Size, Latent Dims]
     print('Encoder Dims: ' + str(latents.get_shape().as_list()))
 
-    #latents_global = global_encoder(Z, activation='swish', norm='layer', b_train=b_train, scope='g_encoder')
-    #print('Global Encoder Dims: ' + str(latents_global.get_shape().as_list()))
+    # latents_global = global_encoder(Z, activation='swish', norm='layer', b_train=b_train, scope='g_encoder')
+    # print('Global Encoder Dims: ' + str(latents_global.get_shape().as_list()))
 
-    #latents = tf.concat([latents, latents_global], axis=-1)
+    # latents = tf.concat([latents, latents_global], axis=-1)
 
     print('Final Encoder Dims: ' + str(latents.get_shape().as_list()))
 
@@ -885,8 +889,10 @@ def test(model_path):
                                   activation='relu', norm='layer', b_train=b_train, scope='decoder')
 
     # Adversarial Discriminator
-    latent_fake, logit_fake = discriminator(reconstructed_patch, cpc_context, activation='relu', norm='layer', b_train=b_train, scope='discriminator')
-    latent_real, logit_real = discriminator(Y, cpc_context, activation='relu', norm='layer', b_train=b_train, scope='discriminator')
+    latent_fake, logit_fake = discriminator(reconstructed_patch, cpc_context, activation='relu', norm='layer',
+                                            b_train=b_train, scope='discriminator')
+    latent_real, logit_real = discriminator(Y, cpc_context, activation='relu', norm='layer', b_train=b_train,
+                                            scope='discriminator')
 
     print('Reconstructed Patch Dims: ' + str(reconstructed_patch.get_shape().as_list()))
     confidence_fake = tf.nn.sigmoid(logit_fake)
@@ -902,14 +908,15 @@ def test(model_path):
     decoder_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='decoder')
 
     alpha = 0.1
-    beta = 0.9
+    beta = 0.8
     scale = 1.0
 
     total_loss = beta * r_loss * (alpha + diff_loss) + (1 - beta) * grad_loss
 
-    optimizer = tf.train.AdamOptimizer(learning_rate=1e-4, beta1=0.5).minimize(cpc_e_loss + total_loss + scale * latent_loss,
-                                                                               var_list=[encoder_vars + cpc_vars + decoder_vars])
-    #optimizer = tf.train.AdamOptimizer(learning_rate=1e-4, beta1=0.5).minimize(total_loss + cpc_e_loss)
+    optimizer = tf.train.AdamOptimizer(learning_rate=1e-4, beta1=0.5).minimize(
+        cpc_e_loss + total_loss + scale * latent_loss,
+        var_list=[encoder_vars + cpc_vars + decoder_vars])
+    # optimizer = tf.train.AdamOptimizer(learning_rate=1e-4, beta1=0.5).minimize(total_loss + cpc_e_loss)
     disc_optimizer = tf.train.AdamOptimizer(learning_rate=1e-4, beta1=0.5).minimize(disc_loss, var_list=disc_vars)
 
     # Launch the graph in a session
@@ -1045,11 +1052,11 @@ if __name__ == '__main__':
     # Training parameter
     num_epoch = 100
 
-    predict_skip = 0
+    predict_skip = 1
     num_predicts = batch_size - ar_lstm_sequence_length - predict_skip
 
     pixel_brightness_threshold = 128.0
-    patch_changeness_threshold = 3.0
+    patch_changeness_threshold = 10.0
     anomaly_score = 100.0
 
     # (x=960, y=160)
